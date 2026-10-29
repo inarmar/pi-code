@@ -91,12 +91,8 @@
 import * as os from 'node:os'
 import { createLocalBashOperations, type ExtensionAPI, type ExtensionContext, SettingsManager, type ToolResultEvent, type UserBashEventResult } from '@earendil-works/pi-coding-agent'
 import { claudeEffortLevel } from '../internal/effort.ts'
-import { INSTRUCTIONS_CHANNEL, isInstructionLoadEvent } from '../internal/instruction-events.ts'
 import { readManagedSettings } from '../internal/managed-settings.ts'
-import { isMcpToolAliases, MCP_TOOLS_CHANNEL } from '../internal/mcp-alias.ts'
 import { resolveModelOverride } from '../internal/model-lookup.ts'
-import { isPlanModeState, PLAN_MODE_CHANNEL } from '../internal/plan-mode-state.ts'
-import { approvalRecheck, isProjectApproved } from '../internal/project-approval.ts'
 import { checkoutRoot } from '../internal/project-root.ts'
 import { watchSettingsFiles } from '../internal/settings-watch.ts'
 import { isSkillHooksEvent, SKILL_HOOKS_CHANNEL } from '../internal/skill-hooks.ts'
@@ -290,7 +286,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
   }
   /** Claude sends session_id, transcript_path, cwd and effort on every payload. */
   const commonPayload = (ctx: ExtensionContext): Record<string, unknown> => {
-    const common: Record<string, unknown> = { session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, permission_mode: permissionMode }
+    const common: Record<string, unknown> = { session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, permission_mode: 'default' }
     const transcript = ctx.sessionManager.getSessionFile()
     if (transcript) common.transcript_path = transcript
     // Claude vocabulary only: pi's minimal maps to low and off carries no effort.
@@ -382,44 +378,6 @@ export default function hooksExtension(pi: ExtensionAPI) {
     mergeSkillHooks(config, data.skillName, data.hooks, hookSources)
   })
 
-  // Claude matchers name MCP tools mcp__<server>__<tool>; pi-code registers them as
-  // <server>_<tool>. The mcp extension publishes the mapping on pi's shared bus.
-  const mcpAliases = new Map<string, string>()
-  pi.events.on(MCP_TOOLS_CHANNEL, (data) => {
-    if (!isMcpToolAliases(data)) return
-    mcpAliases.clear()
-    for (const entry of data) mcpAliases.set(entry.pi, entry.claude)
-  })
-  // Claude's permission_mode: pi has no permission system, but pi-code's plan mode is
-  // the documented "plan" mode; its extension publishes the state on the shared bus.
-  let permissionMode = 'default'
-  pi.events.on(PLAN_MODE_CHANNEL, (data) => {
-    if (isPlanModeState(data)) permissionMode = data.active ? 'plan' : 'default'
-  })
-  // Claude's InstructionsLoaded hook has NO decision control: exit codes are
-  // ignored and every JSON output field (systemMessage included) is discarded, so
-  // dispatch is fire-and-forget on all paths. `nested_traversal` arrives from
-  // context-imports when a CLAUDE.md below cwd is attached on a file touch. The
-  // `compact` reason can never fire honestly and is a deliberate gap, not an
-  // approximation: pi does not re-load instruction files after compaction.
-  const fireInstructionsLoaded = (payload: Record<string, unknown>): void => {
-    if (!sessionCtx) return
-    const commands = matchingCommands(config.InstructionsLoaded, String(payload.load_reason))
-    if (commands.length === 0) return
-    void runNotifyHooks(commands, { hook_event_name: 'InstructionsLoaded', ...payload }, boundRunner(sessionCtx)).catch(() => {})
-  }
-  // Every load rides the shared bus: context-imports publishes session_start for
-  // the context files that survived claudeMdExcludes and include for resolved
-  // @imports (deduped there, once per file per session); claude-rules publishes
-  // path_glob_match when a scoped rule attaches. Consuming the bus rather than
-  // iterating raw contextFiles keeps this extension from announcing a file the
-  // exclusion removed from the prompt; bus emit is synchronous, so the events
-  // arrive regardless of extension load order.
-  pi.events.on(INSTRUCTIONS_CHANNEL, (data) => {
-    if (!isInstructionLoadEvent(data)) return
-    fireInstructionsLoaded({ ...data })
-  })
-
   /** Resolve the whole hook configuration from disk. Runs at session start and
    * again when the settings watcher sees an edit, so mid-session changes to
    * hooks, disableAllHooks, or allowedHttpHookUrls apply without a restart. */
@@ -448,7 +406,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
   }
 
   /** Merge the non-managed hook sources into the managed config resolveConfig loaded:
-   * settings files, a subagent child's agent hooks, and this session's skill hooks. */
+   * ordinary Claude settings and skill hooks active for the current run. */
   function mergeNonManagedHooks(files: string[]): void {
     for (const [eventName, matchers] of Object.entries(loadHooks(files, hookSources))) config[eventName] = [...(config[eventName] ?? []), ...matchers]
     // A reload must not drop the skill hooks the session already registered, nor revive
@@ -485,7 +443,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
     pendingToolContext.clear()
     registeredSkillHooks.length = 0
     spentOnce.clear()
-    const trusted = await isProjectApproved(ctx)
+    const trusted = ctx.isProjectTrusted?.() === true
     // Claude's CLAUDE_PROJECT_DIR is the project root, not the session cwd; a hook
     // referencing $CLAUDE_PROJECT_DIR/.claude/hooks/helper.sh must resolve from a
     // subdirectory session too.
@@ -495,10 +453,8 @@ export default function hooksExtension(pi: ExtensionAPI) {
     // closes over the cwd value, never ctx: the poll has no awaiter, and every getter of
     // a replaced session's ctx throws, which would exit pi as an uncaughtException.
     const watchCwd = ctx.cwd
-    // The reload asks again rather than reusing `trusted`: see approvalRecheck.
-    const stillApproved = approvalRecheck(ctx)
     disposeSettingsWatch()
-    disposeSettingsWatch = watchSettingsFiles(hookFiles(watchCwd, os.homedir(), trusted), () => resolveConfig(watchCwd, trusted && stillApproved()))
+    disposeSettingsWatch = watchSettingsFiles(hookFiles(watchCwd, os.homedir(), trusted), () => resolveConfig(watchCwd, trusted))
     // A disabled or managed-only resolution leaves config empty (or managed-only),
     // so the SessionStart run below fires exactly what remains active.
     pendingSessionContext = []
@@ -530,7 +486,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
 
   pi.on('tool_call', async (event, ctx) => {
     const anchors = { cwd: ctx.cwd, projectRoot: projectDir || ctx.cwd, home: os.homedir() }
-    const decision = await runPreToolUse(config, event.toolName, event.input, boundRunner(ctx, { tool_use_id: event.toolCallId }), mcpAliases.get(event.toolName), (message) => ctx.ui.notify(message, 'warning'), anchors)
+    const decision = await runPreToolUse(config, event.toolName, event.input, boundRunner(ctx, { tool_use_id: event.toolCallId }), undefined, (message) => ctx.ui.notify(message, 'warning'), anchors)
     if (!decision.block) {
       // additionalContext is delivered alongside the tool result, so stash it for
       // this call's tool_result to append.
@@ -600,7 +556,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
   // Bash/Write response shapes; see claude-tools), and a schema-valid
   // updatedToolOutput replaces the output the model sees.
   pi.on('tool_result', async (event, ctx) => {
-    const alias = mcpAliases.get(event.toolName)
+    const alias = undefined
     const translatedName = alias ?? claudeToolName(event.toolName)
     const eventName = event.isError ? 'PostToolUseFailure' : 'PostToolUse'
     // Contexts stashed by this call's PreToolUse hooks land next to the result even

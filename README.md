@@ -1,84 +1,40 @@
 # pi-code
 
-[![npm](https://img.shields.io/npm/v/pi-code)](https://www.npmjs.com/package/pi-code)
-[![npm](https://img.shields.io/npm/dt/pi-code)](https://www.npmjs.com/package/pi-code)
-[![GitHub](https://img.shields.io/github/license/ilovepixelart/pi-code)](https://github.com/ilovepixelart/pi-code/blob/main/LICENSE)
-\
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=ilovepixelart_pi-code&metric=coverage)](https://sonarcloud.io/summary/new_code?id=ilovepixelart_pi-code)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=ilovepixelart_pi-code&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ilovepixelart_pi-code)
-\
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=ilovepixelart_pi-code&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=ilovepixelart_pi-code)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=ilovepixelart_pi-code&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=ilovepixelart_pi-code)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=ilovepixelart_pi-code&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=ilovepixelart_pi-code)
+Claude Code **skills** and **hooks** compatibility for [Pi](https://pi.dev).
 
-Claude Code experience for the [pi](https://pi.dev) coding agent, in one package. Point pi at a project that already has a `.claude/` directory and it reads your existing config: rules, commands, skills, and hooks. It also provides todos, web search, planning, and goals.
+This fork intentionally includes two Pi extensions:
 
-What a repository ships is treated as untrusted until you approve it: project hooks, rules, commands and skills load only once you say yes. A headless run (`pi -p`) cannot ask, so an undecided project loads none of them there, which is stricter than Claude, where a headless run uses them without showing the dialog.
+- `extensions/skills.ts` discovers Claude-format skills under `.claude/skills`, expands arguments, `@file` references and optional shell spans, and activates skill hooks **only on explicit `/skill:name` input**. Hooks can also come from any skill Pi has loaded, including Pi packages and additional skill paths.
+- `extensions/hooks/index.ts` executes Claude Code lifecycle hooks from `.claude/settings.json`, `.claude/settings.local.json`, user settings, managed settings and explicitly invoked skill frontmatter. It handles blocking, feedback, timeouts and Stop continuation through `agent_before_settle`.
 
-![pi-code demo](demos/hero.gif)
+**Skill hooks expire at `agent_settled`**, after all Stop continuations in the current agent run. Ordinary settings hooks remain configured across runs.
 
-## Requirements
+This package does not implement commands, MCP servers, Claude plugins, subagents, plan mode, goals, todo management, questions, web tools, environment injection, extra context-file imports, rules, a separate project-trust dialog or settings CLI flags. Those should be provided by Pi, BB or separate packages.
 
-pi `>=0.80.5` (0.99.x recommended) and Node `>=22.19` for current pi. On an older pi, pi-code warns once at session start.
+Project-scoped skill and hook resources use Pi's native project trust. The process must be trusted by Pi before project-controlled executable configuration is loaded. In RPC mode, dialogs and notifications depend on the hosting client.
 
 ## Install
 
-```bash
-pi install npm:pi-code       # from npm
-pi install -l npm:pi-code    # project-local instead, writes .pi/settings.json
+```sh
+pi install git:github.com/inarmar/pi-code
 ```
 
-Other sources:
+Or install a local checkout:
 
-```bash
-pi install git:github.com/ilovepixelart/pi-code
-pi install ./pi-code         # local checkout, then /reload after edits
+```sh
+pi install ./pi-code
 ```
 
-One `pi install` and everything below loads on the next start. `pi list` shows what is installed, `pi config` toggles individual resources, and `pi update pi-code` upgrades it. Each feature is an extension under [`extensions/`](extensions).
-
-## What it does
-
-Each topic links to its own doc with the full contract and any divergences from Claude Code.
-
-- **[Hooks](docs/hooks.md)** — your `.claude/settings.json` hooks on every lifecycle event, with Claude's tool vocabulary, decision fields, and background hooks.
-- **[Custom slash commands](docs/commands.md)** — `.claude/commands` with arguments, bash spans, `@file` inlining, frontmatter, and model invocation.
-- **[Skills](docs/skills.md)** — `.claude/skills` discovery plus the same dynamic content commands get.
-- **[CLAUDE.md, @imports, and rules](docs/claude-md.md)** — the context files and path-scoped rules pi does not load natively.
-- **[Settings `env` and flags](docs/settings-env.md)** — env blocks from every settings scope, exported with Claude's precedence, plus Claude's `--settings` and `--setting-sources` flags.
-- **[WebSearch / WebFetch](docs/web.md)** — key-free search and SSRF-guarded fetch.
-- **[Goal](docs/goal.md)**: `/goal <condition>` keeps the session working until a separate model check confirms the condition holds, with status, clear, block cap, background-work deferral, and resume.
-- **[Session extras](docs/session-extras.md)** — project trust, plan mode, todos, AskUserQuestion, think keywords, `/context`, `/init`.
-
-Slash commands: `/init`, `/context`, `/goal`, `/todos`, `/plan`, `/plan-todos`, and `/hooks`, alongside your own `/dir:name` commands, `/skill:name` skills. Where a name matches a Claude command, these differ: `/init` creates `AGENTS.md` where Claude creates `CLAUDE.md`; `/tasks` lists background subagent runs only, not background shells. `/todos` and `/plan-todos` have no Claude counterpart.
-
-pi has no general permission system, so most of what Claude routes through a permission prompt maps to hard behavior here: `allowed-tools` restricts the turn's tool set instead of pre-approving calls, and a hook that times out on PreToolUse or UserPromptSubmit fails closed. A hook's `permissionDecision: "ask"` is the exception: it shows a confirm dialog and lets the call through when you approve (a headless run has no dialog, so it blocks). Where a Claude restriction cannot be expressed at all (an argument-scoped grant in an agent's `tools:`), the definition is rejected rather than widened.
-
-Trust is the other place pi-code is deliberately stricter. Claude states that "a `claude -p` run never shows the trust dialog" and loads the project's hooks, commands, skills and rules anyway. pi-code refuses instead: with no stored decision and no UI to ask, a headless run in a project you have not already trusted loads none of them. A repository would otherwise get to run its own hooks in any CI job that checks it out, with nobody present to decline.
-
-`CLAUDE.md` itself needs no extension: pi loads `CLAUDE.md` / `AGENTS.md` context files natively (global + walking cwd to root). `context-imports.ts` adds what pi's loader lacks, the `@import` resolution and Claude's other memory locations, without re-injecting the base (see [docs/claude-md.md](docs/claude-md.md)). Setting `CLAUDE_CONFIG_DIR` relocates the entire home config scope (settings, commands, skills, and the user `CLAUDE.md`); a project's own `.claude/` is a separate scope and is unaffected.
-
-[`extensions/internal/`](extensions/internal) holds the shared modules pi's loader must not treat as extensions (each file's header says what it owns); only `internal/` keeps them out of pi's extension scan.
-
-Vendored base (`question`) come from pi's MIT example extensions (see [LICENSE](LICENSE)).
+See [Skills](docs/skills.md) and [Hooks](docs/hooks.md).
 
 ## Development
 
-```bash
-npm install
-npm run check           # biome + strict tsc + knip + vitest with coverage floors, the whole gate
-scripts/e2e-smoke.sh    # headless deterministic smoke: wire payload against a dead-port model, no real model (also runs in CI)
-scripts/e2e.sh          # quick smoke of the real pi TUI via tmux (needs a working model)
-scripts/e2e-full.sh     # every README feature end to end, model turns included (5-15 min)
-scripts/record-demos.sh # re-records demos/*.tape with vhs at low thinking
+```sh
+npm ci
+npm run check
+bash scripts/e2e-smoke.sh
 ```
 
-Extensions live in `extensions/`, tests in `tests/`. Install a local checkout with `pi install ./pi-code`, then `/reload` after edits. Development needs Node `>=22.19`.
+Requires Node >=22.19 and a compatible Pi installation.
 
-## Contributing
-
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the test and review conventions, and the release process, and the [Code of Conduct](CODE_OF_CONDUCT.md) for community expectations. Report security issues privately as described in [SECURITY.md](SECURITY.md). Release notes are on the [Releases page](https://github.com/ilovepixelart/pi-code/releases).
-
-## License
-
-[MIT](LICENSE).
+MIT license.

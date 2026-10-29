@@ -29,17 +29,13 @@ trap 'cleanup; trap - TERM; kill -TERM $$' TERM
 
 [ -x "$PI_BIN" ] || { printf 'FAIL smoke: %s missing; run npm ci first\n' "$PI_BIN"; exit 1; }
 
-# --- Fixture: the context surfaces whose payload injection is deterministic ---
+# --- Fixture: Claude skills discoverable through Pi ---
 FX="$SMOKE/fx"
-mkdir -p "$FX/.claude/rules" "$FX/.claude/skills/greet" "$FX/notes"
+mkdir -p "$FX/.claude/skills/greet"
 # Resolved path: the trust key must match the cwd pi sees (on macOS mktemp
 # hands out /var/... while processes resolve /private/var/...).
 FX=$(cd "$FX" && pwd -P)
 git -C "$FX" init -qb main 2>/dev/null
-printf 'Project context for the smoke.\n\n@notes/extra.md\n' > "$FX/CLAUDE.md"
-printf 'The codeword is ZANZIBAR.\n' > "$FX/notes/extra.md"
-printf 'PERSONAL LOCAL NOTE MARKER\n' > "$FX/CLAUDE.local.md"
-printf -- '- Tests must be deterministic.\n' > "$FX/.claude/rules/testing.md"
 printf -- '---\nname: greet\ndescription: Greets people for the smoke\n---\nReply with a greeting.\n' > "$FX/.claude/skills/greet/SKILL.md"
 
 # --- Isolated home: dead-port model, the committed probe, pre-seeded trust ---
@@ -74,30 +70,7 @@ run_pi "$PI_BIN" -p "hi" > "$SMOKE/pi-out.log" 2>&1
 [ -s "$WIRE" ] && ok "smoke: wire probe captured the provider payload" || bad "smoke: no wire payload captured (pi output: $(tail -1 "$SMOKE/pi-out.log" 2>/dev/null))"
 
 wire_has() { grep -q "$1" "$WIRE" 2>/dev/null; }
-if wire_has 'ZANZIBAR'; then ok "smoke: @import chain content on the wire"; else bad "smoke: import content missing from payload"; fi
-if wire_has 'PERSONAL LOCAL NOTE MARKER'; then ok "smoke: CLAUDE.local.md on the wire"; else bad "smoke: local marker missing from payload"; fi
-if wire_has 'Tests must be deterministic'; then ok "smoke: project rule on the wire"; else bad "smoke: project rule missing from payload"; fi
-if wire_has 'available_skills' && wire_has 'greet'; then ok "smoke: skills listing on the wire"; else bad "smoke: skills listing missing from payload"; fi
-# --- A freshly cloned project nobody was asked about, headless: no prompt can approve it ---
-# pi itself still loads its CLAUDE.md, and an import inside the project is only more of
-# what the repository ships; everything else project-scoped stays out.
-UNTRUSTED="$SMOKE/untrusted"
-mkdir -p "$UNTRUSTED/.claude/rules" "$UNTRUSTED/notes"
-UNTRUSTED=$(cd "$UNTRUSTED" && pwd -P)
-git -C "$UNTRUSTED" init -qb main 2>/dev/null
-printf 'OUTSIDE THE PROJECT MARKER\n' > "$HOMEDIR/outside.md"
-printf 'Untrusted project context.\n\n@notes/inside.md\n@%s/outside.md\n' "$(native "$HOMEDIR")" > "$UNTRUSTED/CLAUDE.md"
-printf 'INSIDE THE PROJECT MARKER\n' > "$UNTRUSTED/notes/inside.md"
-printf 'UNTRUSTED LOCAL MARKER\n' > "$UNTRUSTED/CLAUDE.local.md"
-printf -- '- UNTRUSTED RULE MARKER\n' > "$UNTRUSTED/.claude/rules/rule.md"
-WIRE="$HOMEDIR/wire-untrusted.jsonl"
-FX="$UNTRUSTED" run_pi "$PI_BIN" -p "hi" > "$SMOKE/pi-untrusted.log" 2>&1
-[ -s "$WIRE" ] || bad "smoke: no wire payload captured for the untrusted project (pi output: $(tail -1 "$SMOKE/pi-untrusted.log" 2>/dev/null))"
-if wire_has 'Untrusted project context' && wire_has 'INSIDE THE PROJECT MARKER'; then ok "smoke: untrusted CLAUDE.md and its in-project import on the wire"; else bad "smoke: untrusted CLAUDE.md or its in-project import missing"; fi
-# The refusal notice is the evidence the import was resolved and refused, not just absent.
-if wire_has 'OUTSIDE THE PROJECT MARKER'; then bad "smoke: untrusted project imported a file outside it"; elif wire_has 'Imports not loaded (@)'; then ok "smoke: untrusted project's outside import refused, and the prompt says so"; else bad "smoke: no refusal notice for the untrusted project's outside import"; fi
-if wire_has 'UNTRUSTED LOCAL MARKER'; then bad "smoke: untrusted CLAUDE.local.md on the wire"; else ok "smoke: untrusted CLAUDE.local.md kept out"; fi
-if wire_has 'UNTRUSTED RULE MARKER'; then bad "smoke: untrusted project rule on the wire"; else ok "smoke: untrusted project rule kept out"; fi
+if wire_has 'available_skills' && wire_has 'greet'; then ok "smoke: skill discovered and present in Pi prompt"; else bad "smoke: skill missing from Pi prompt"; fi
 printf '\n'
 printf 'e2e-smoke finished: %s passed, %s failed\n' "$PASS" "$FAIL"
 exit $((FAIL > 0))

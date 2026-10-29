@@ -1,12 +1,14 @@
-# Skills
+# Claude Code skills
 
-Bridges `.claude/skills` into pi's skill discovery. Source: [`extensions/skills.ts`](../extensions/skills.ts).
+Pi loads skills natively; this extension contributes `.claude/skills/<name>/SKILL.md` from user and trusted project scopes and the configured managed-skills directory.
 
-- Skills load in Claude's precedence order: the enterprise directory beside the managed settings file, then personal `~/.claude/skills`, then (approval-gated) every project `.claude/skills` between the working directory and the repository root. `CLAUDE_CODE_DISABLE_POLICY_SKILLS` drops the enterprise directory from the scan; personal and project skills are unaffected.
-- pi's loader reads `name`, `description`, and `disable-model-invocation`. Loader-side gaps, documented rather than hidden: other frontmatter fields (including `yes`/`on`/`1` boolean spellings) and the first-paragraph description fallback are pi-loader territory; a description-less skill may be dropped from the listing.
-- `context: fork` is not supported (the subagent implementation has been removed); pi-code refuses such an invocation rather than silently running it in the main context.
-- `skillOverrides`: a skill set to `"off"` refuses `/skill:name` with a notice; `"name-only"` listing visibility is pi-loader territory (noted gap).
-- Invoking a **Claude-contributed** `/skill:name` expands the body through the shared command pipeline, as Claude documents that commands and skills "work the same way": `` !`cmd` `` spans, `@file` references, `$ARGUMENTS`/positional substitution, and `${CLAUDE_*}` variables, with the same shell-execution gate commands use.
-- **Skill hooks from any pi-discovered skill**: on an explicit `/skill:name` invocation, this extension reads the frontmatter of the exact `SKILL.md` file pi registered (including `.pi/skills`, `.agents/skills`, package-provided skills and custom skill paths). Hook declarations are published to the hooks extension for the remainder of the session. Neither discovery nor a model reading `SKILL.md` via a tool activates hooks. Non-Claude skills otherwise use pi's native expansion unchanged; only Claude-contributed skills use the dynamic-content shim described above. When pi's loaded skill shadows a Claude skill of the same name, the loaded skill's hooks win.
-- A skill with malformed frontmatter degrades to pi's plain expansion (raw body) instead of failing the invocation.
-- Injected-span divergences: a span that exceeds the 2-minute timeout is killed and aborts the invocation (pi has no auto-background Bash set); the exit-1 carveout uses Claude's per-shell sets (bash keeps `find`/`diff`; PowerShell keeps `grep`/`git diff` but not `find`/`diff`). Stacked multi-skill messages (`/a` then `/b` in one message) expand only the first, and `@file` references outside the working directory stay literal (a deliberate hardening).
+- A skill is activated only through an explicit `/skill:name` invocation (including a single skill selected in BB's composer and converted to that command by BB's Pi provider).
+- On that invocation the extension reads the resolved skill's frontmatter and publishes `hooks` to the Hooks extension. The resolved skill can come from any source Pi sees: `.pi/skills`, `.agents/skills`, additional `--skill` paths, or packages.
+- Hook activation does **not** happen merely because the model reads `SKILL.md` or Pi discovers a skill.
+- Hooks expire at `agent_settled`, after automatic retries, Stop continuations and the complete current agent run. A later run requires a new explicit invocation.
+- Pi-native skills use Pi's own body expansion. For Claude-contributed skills, this extension supports arguments, `@file` and shell substitutions. `disableSkillShellExecution` from Claude settings suppresses shell substitutions.
+- A skill with `context: fork` cannot run because this package does not include subagents.
+
+The extension consults Pi's project trust; it does not implement a second trust prompt. In a headless untrusted project, project-controlled skills are not loaded.
+
+Source: [skills.ts](../extensions/skills.ts).

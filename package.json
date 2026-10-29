@@ -1,20 +1,14 @@
 {
   "name": "pi-code",
   "version": "1.6.1",
-  "description": "Claude Code compatibility for pi: commands, skills, hooks, rules, goals and planning",
+  "description": "Claude Code skill and hook compatibility for Pi",
   "keywords": [
     "pi",
     "pi-package",
-    "pi-coding-agent",
     "pi-extension",
-    "extension",
-    "claude",
     "claude-code",
-    "coding-agent",
-    "ai",
     "hooks",
-    "skills",
-    "todo"
+    "skills"
   ],
   "license": "MIT",
   "author": "ilovepixelart",
@@ -24,14 +18,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ilovepixelart/pi-code.git"
+    "url": "git+https://github.com/inarmar/pi-code.git"
   },
-  "homepage": "https://github.com/ilovepixelart/pi-code#readme",
-  "bugs": "https://github.com/ilovepixelart/pi-code/issues",
+  "homepage": "https://github.com/inarmar/pi-code#readme",
+  "bugs": "https://github.com/inarmar/pi-code/issues",
   "pi": {
     "extensions": [
-      "./extensions/claude-rules.ts",
-      "./extensions"
+      "./extensions/hooks/index.ts",
+      "./extensions/skills.ts"
     ]
   },
   "scripts": {

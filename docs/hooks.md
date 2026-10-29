@@ -1,61 +1,17 @@
-# Hooks
+# Claude Code hooks
 
-Runs Claude Code's `.claude/settings.json` hooks on pi's lifecycle events. Source: [`extensions/hooks/`](../extensions/hooks) (the module header in `index.ts` is the authoritative contract).
+The Hooks extension translates Claude Code hook declarations from user, managed and **Pi-trusted** project `.claude/settings.json` (including local overrides), and from `hooks` frontmatter in explicitly invoked Pi skills.
 
-Hook locations (settings.json from the session's primary working directory, settings.local.json at the repository root, per Claude's placement rules): settings files, the `--settings` flag ([settings-env.md](settings-env.md#command-line-flags)), managed policy settings, plugins, skill frontmatter (registered at invocation for the rest of the session, with `once` removing a hook after its first successful run), and agent frontmatter (passed to the subagent child via env, running only while it runs, with `Stop` converted to `SubagentStop`).
+Hook types: shell command, HTTP POST and model-evaluated prompt; legacy `mcp_tool` hook dispatch is available only if an external caller is wired in. This package does **not** connect MCP servers.
 
-## Events
+The integration covers `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd`, `PreCompact`, `PostCompact`, `Notification` and `PostModelSwitch`, subject to available Pi events. `InstructionsLoaded` requires a separate instructions extension and is not emitted by this package.
 
-- **PreToolUse**: blocks tools, rewrites input via `updatedInput`, injects `additionalContext` beside the eventual tool result.
-- **PostToolUse**: feedback and `additionalContext` land next to the tool result; `updatedToolOutput`/`updatedMCPToolOutput` replace what the model sees (schema-checked for built-ins, unvalidated for MCP).
-- **PostToolUseFailure**: notify-only (the tool already failed); the hook's stderr is shown to the model.
-- **SessionStart**: context injection before the first prompt.
-- **UserPromptSubmit**: blocks the prompt or adds context to it.
-- **Stop**: runs at pi's `agent_before_settle` boundary, after automatic retries/compaction rather than at `agent_end`. A block (or `additionalContext`) appends feedback to the session and resumes the same agent run with `continue: true`, with `stop_hook_active` as the loop guard and a consecutive-block cap of 8 (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`; `0` disables the cap). Does not run on interrupted or failed runs. Child agent-frontmatter `SubagentStop` and idle notifications still use `agent_end`.
-- **PreCompact**: exit 2 or a `decision: block` JSON reply cancels the compaction, with the reason shown; other output is notify-only.
-- **PostCompact / SessionEnd / Notification** (`idle_prompt`, the one type pi can source): notify-only. `idle_prompt` fires when the turn ended about 60 seconds ago and the user hasn't typed since, per Claude's timing; input, the next turn or a session switch cancels it. After compaction, **SessionStart** also fires with source `compact`.
-- **PostModelSwitch**: fires after the session's model changes, matched against the new model id; stdout/`additionalContext` reaches the model on the next turn. `requested_model` is `null` (pi does not carry the requested alias) and the cost-estimate fields are absent rather than fabricated. PreModelSwitch stays unbridged: pi's `model_select` event has no veto seam, and a blocking hook whose decision is silently ignored would be worse than an absent event. MessageDisplay is likewise unbridged (pi has no display-replacement seam).
-- **InstructionsLoaded**: observational; fires per loaded context file at session start, plus `nested_traversal` when a CLAUDE.md/CLAUDE.local.md below cwd is attached on a file touch, `path_glob_match` on a scoped-rule attach, and `include` per resolved `@import`, deduped per session. The `compact` reason never fires (pi does not reload instruction files after compaction).
+A blocking `Stop` hook runs on `agent_before_settle`, appends model-visible feedback and returns `continue: true` to continue the **same run**. A consecutive-block cap prevents infinite loops.
 
-## Hook types
+**Lifetime:** hooks from ordinary settings remain available until settings change/session end. Skill-frontmatter hooks start on explicit `/skill:name` and are removed at `agent_settled`, not at `turn_end`. The hook set is preserved through multiple model turns and Stop continuations.
 
-- `type: "command"` (default): runs the command string through a shell (`sh -c`; on Windows Git Bash, or PowerShell when Git Bash is absent; `shell: "powershell"` forces PowerShell and rewrites `${CLAUDE_*}` placeholders to `${env:NAME}`) with the event JSON on stdin, or exec form (`command` as an argv array, no shell); executes with `CLAUDECODE=1` and `CLAUDE_PROJECT_DIR` set. `CLAUDE_CODE_GIT_BASH_PATH` names the Git Bash to use, as in Claude; a path that does not exist or is not named `bash.exe`, `sh.exe`, `bash` or `sh` is ignored and Git Bash is looked up as if it were unset ([`internal/shell-resolve.ts`](../extensions/internal/shell-resolve.ts)).
-- `type: "http"`: POSTs the payload; a 2xx JSON body renders the decision, everything else is non-blocking per Claude's contract. Targets are gated by `allowedHttpHookUrls` (union of managed and settings scopes; unset allows all, `[]` blocks every http hook).
-- `type: "prompt"`: evaluates in-process against the session model.
-- For all non-command types: a missing model, server or runner is non-blocking, while a timeout fails closed on the gated events (PreToolUse, UserPromptSubmit) as it does for a command hook, whatever the transport.
+`/hooks` displays the resolved configuration; in an RPC host like BB, `ctx.ui.notify` may not be visible, even though hook execution still works.
 
-## Payloads and decisions
+Project hooks can execute code in the Pi process's permissions. Use Pi's trust controls and the host's process/container isolation.
 
-- Payloads use Claude's vocabulary for pi's built-ins. Every pi tool the tools reference has a counterpart for reports its canonical Claude name, so a matcher or `if` rule written as `WebFetch`, `Agent`, `Skill`, `AskUserQuestion`, `ExitPlanMode`, `WebSearch` or `TodoWrite` fires; the pi spelling keeps working too, since both names are matched. `ls` and `memory` have no counterpart and stay untranslated.
-- Input shapes are translated only for `Bash`/`Edit`/`Write`/`Read`/`Grep`/`Glob` (absolute `file_path`, resolved as pi's tools resolve it: a leading `@` stripped, `~` expanded, a `file://` URL decoded; the documented Bash/Write response shapes), because those are the only tools the hooks reference gives a per-tool input table for. For every other tool the payload carries pi's own input fields, since there is no documented Claude shape to conform to. `updatedInput` is translated back to pi's shape for the six (an incomplete rewrite keeps the original input).
-- `if` rules take each tool's own permission specifier: `Bash(git *)`, a path rule for the file tools, `WebFetch(domain:host)`, `Agent(AgentName)` checked against every agent a call names, and `Skill(name)` / `Skill(name *)`. A tool with no specifier syntax matches nothing, as an unparseable rule does.
-- Every payload carries `session_id`, `transcript_path`, `cwd`, `permission_mode`, `effort`; tool events add `tool_use_id` and PostToolUse/PostToolUseFailure add `duration_ms` (excluding PreToolUse hook and confirm time). PreCompact carries `custom_instructions`, PostCompact `compact_summary`.
-- Stdout follows Claude's shape rule: only output that starts with `{` and ends with `}` is read as JSON; arrays, quoted strings, and numbers are plain text, multi-line independent JSON objects with no output field are plain text, and malformed `{..}`-shaped output surfaces a `hook error` notice instead of becoming context.
-- UserPromptSubmit adds `additionalContext` to the same turn, right after the prompt, and never replaces it. `suppressOriginalPrompt` is accepted and needs no handling: it omits the prompt from a block message, and a blocked prompt here is reported by reason alone.
-- Claude matcher semantics, including `mcp__server__tool` names; Stop and UserPromptSubmit ignore a stray matcher.
-- Identical handlers collapse across settings files only; a skill's copy stays separate, and http handlers differing only in headers are distinct.
-- The `if` permission-rule filter (`"Bash(git *)"`, `"Edit(*.ts)"`) runs on tool events only; a hook carrying it never runs elsewhere.
-- A blocked PreToolUse call (deny, `decision: "block"`, exit 2, or an ask with no UI) returns the reason to the model as the tool's error and the run continues, as in Claude; a fail-closed timeout (see below) behaves the same. `continue: false` ends the run. `"defer"` and a declined ask dialog end it only when no other call in the same tool batch lets it continue, since pi skips its follow-up model call only when every call in the batch agrees.
-- `permissionDecision: "ask"` prompts via a confirm dialog (blocks when headless); `"defer"` blocks the call, since pi cannot resume a deferred one. Precedence across hooks is Claude's deny > defer > ask > allow.
-- Exit-2 blocking messages prefer the JSON reason over stderr.
-- `continue: false` stops the run; it does not decide the tool call, which the other fields still do. Its `stopReason` is shown to the user. PreToolUse: an allowed call runs and the run stops once its result is in, also when another extension blocks the call; beside a deny or block the call is blocked and the run stops at once; beside an ask the prompt still shows. PostToolUse: the run stops after the result. Stop: it wins over every Stop hook's block, its own or another's. SubagentStop: the child has already finished, so only the `stopReason` is shown. To keep a tool call from running, use `permissionDecision: "deny"`, `decision: "block"` or exit 2.
-- A user-typed `!`/`!!` bash line runs PreToolUse (there is no PostToolUse for it). An `updatedInput` rewrite runs the rewritten command in place of the typed one, under the shell pi would use, and a notice names it, since pi's transcript shows the typed command.
-
-## Background hooks
-
-`async`/`asyncRewake` command hooks run in the background on every event: never blocking, no decision, no timeout enforced on `async` while `asyncRewake` keeps its own. An asyncRewake exit 2 wakes the model with the hook's stderr as a new turn; other completions deliver `systemMessage`/`additionalContext` to the model on the next turn; hooks still running when a headless (`-p`) run ends are killed, as Claude does; an interactive session leaves them to finish.
-
-## Unbridged events and fields
-
-pi has no seam for these; a hook relying on them silently not working would be worse than a documented absence:
-
-- Events: PreModelSwitch (no veto seam on `model_select`), MessageDisplay (no display-replacement seam), UserPromptExpansion, PermissionRequest/PermissionDenied (pi has no permission system), Setup, FileChanged, ConfigChange, CwdChanged, DirectoryAdded, StopFailure, Elicitation events, and Notification types other than `idle_prompt`.
-- Fields: `prompt_id` and Stop's `background_tasks`/`session_crons` (no pi task registry), SessionStart's `initialUserMessage`/`watchPaths`/`sessionTitle` and UserPromptSubmit's `sessionTitle` (no session-rename or file-watch seam), and PostModelSwitch's cost-estimate fields (absent rather than fabricated).
-
-## Divergences from Claude Code
-
-- A timed-out PreToolUse/UserPromptSubmit hook fails closed at a 60s default (Claude: 600s for PreToolUse, 30s for UserPromptSubmit, both non-blocking), since pi has no permission prompt to fall back on. Prompt hooks default to Claude's 30s and agent hooks to 60s; SessionEnd hooks share Claude's 1.5-second budget, raised by a declared per-hook `timeout` up to 60 seconds, so a slow hook cannot stall session exit.
-- Prompt hooks honor the `model` override (resolved against the models this user can run) and append the input JSON to the prompt when `$ARGUMENTS` is absent, as documented.
-- `disableAllHooks` is tiered per Claude: the managed level turns everything off; a settings-file value disables non-managed hooks while managed policy hooks keep running. Divergence: ANY file in the chain setting it to `true` disables, where Claude is last-file-wins. Deliberate, because last-file-wins lets a repository file re-enable the hooks a user just disabled in their own settings, defeating the escape hatch. `allowManagedHooksOnly` blocks every non-managed hook source (settings files, plugins, skills), except hooks from plugins the managed `enabledPlugins` force-enables, which Claude exempts. Settings edits are picked up mid-session by a file watcher. `/hooks` prints the resolved configuration.
-
-A skill's frontmatter hooks activate only when the user explicitly invokes `/skill:name` and expire on `agent_settled`, after all model turns and any Stop continuation for that user turn. An interruption also causes them to expire. Ordinary settings hooks are unaffected.
+Source: [hooks/index.ts](../extensions/hooks/index.ts).

@@ -6,7 +6,6 @@ import { PassThrough } from 'node:stream'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import contextImports from '../extensions/context-imports.ts'
 import hooksExtension, { type HookRunner, interpretHookResult, isBackgroundHook, loadHooks, matchingCommands, runHookCommand, runPreToolUse, runPromptHook, runUserPromptSubmit, sessionEndTimeoutMs, timeoutMs } from '../extensions/hooks/index.ts'
 import { setManagedSettingsPath } from '../extensions/internal/managed-settings.ts'
 import { setMcpToolCaller } from '../extensions/internal/mcp-call.ts'
@@ -226,10 +225,7 @@ const setupExtension = () => {
     compacted: (reason: string, summary?: string) => handler('session_compact')({ reason, ...(summary === undefined ? {} : { compactionEntry: { summary } }) }, defaultCtx),
     shutdown: (reason: string, ctx: Record<string, unknown> = {}) => handler('session_shutdown')({ reason }, { ...defaultCtx, ...ctx }),
     beforeAgentStart: (event: Record<string, unknown> = { systemPrompt: '' }) => handler('before_agent_start')(event),
-    emitMcpTools: (entries: unknown) => busHandlers.get('pi-code:mcp-tools')?.(entries),
     emitSkillHooks: (event: unknown) => busHandlers.get('pi-code:skill-hooks')?.(event),
-    emitPlanMode: (state: unknown) => busHandlers.get('pi-code:plan-mode')?.(state),
-    emitInstruction: (event: unknown) => busHandlers.get('pi-code:instructions')?.(event),
   }
 }
 
@@ -1920,196 +1916,6 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
     for (const type of ['http', 'prompt', 'mcp_tool']) {
       expect(isBackgroundHook({ type, command: 'x', async: true, asyncRewake: true })).toBe(false)
     }
-  })
-})
-
-describe('hooks InstructionsLoaded', () => {
-  const withHooks = async (config: Record<string, unknown>) => {
-    writeSettings(hoisted.home, 'settings.json', config)
-    const ext = setupExtension()
-    const proj = tempDir('hooks-proj-')
-    await ext.sessionStart('startup', { cwd: proj })
-    return { ext, proj }
-  }
-
-  const startEvent = (proj: string, files: Array<{ path: string; content: string }>) => ({ systemPrompt: '', systemPromptOptions: { cwd: proj, contextFiles: files } })
-
-  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
-
-  it('bridges a session_start event from the bus with the common payload fields', async () => {
-    const { ext, proj } = await withHooks({ InstructionsLoaded: [{ matcher: 'session_start', hooks: [{ command: 'il' }] }] })
-    const projectFile = join(proj, 'CLAUDE.md')
-
-    await ext.emitInstruction({ file_path: projectFile, memory_type: 'Project', load_reason: 'session_start' })
-
-    expect(commandsRun()).toEqual(['il'])
-    expect(JSON.parse(recordFor('il').stdin)).toEqual({ ...COMMON, cwd: proj, hook_event_name: 'InstructionsLoaded', file_path: projectFile, memory_type: 'Project', load_reason: 'session_start' })
-  })
-
-  it('does not announce raw contextFiles itself: exclusion-aware session_start events ride the bus', async () => {
-    // claudeMdExcludes lives in context-imports; announcing contextFiles here
-    // used to fire for files the exclusion had removed from the prompt.
-    const { ext, proj } = await withHooks({ InstructionsLoaded: [{ matcher: 'session_start', hooks: [{ command: 'il' }] }] })
-
-    await ext.beforeAgentStart(startEvent(proj, [{ path: join(proj, 'CLAUDE.md'), content: 'x' }]))
-
-    expect(commandsRun()).toEqual([])
-  })
-
-  it('is not told an excluded context file loaded (context-imports integration over the bus)', async () => {
-    mkdirSync(join(hoisted.home, '.claude'), { recursive: true })
-    writeFileSync(
-      join(hoisted.home, '.claude', 'settings.json'),
-      JSON.stringify({
-        claudeMdExcludes: ['**/vendor/CLAUDE.md'],
-        hooks: { InstructionsLoaded: [{ matcher: 'session_start', hooks: [{ command: 'il' }] }] },
-      }),
-    )
-    setManagedSettingsPath(join(hoisted.home, 'managed-settings.json'))
-    try {
-      const ext = setupExtension()
-      const proj = tempDir('hooks-proj-')
-      mkdirSync(join(proj, 'vendor'))
-      await ext.sessionStart('startup', { cwd: proj })
-
-      // context-imports on the same bus: its synchronous emits reach the
-      // listener hooks registered, regardless of extension order.
-      const ciHandlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>()
-      contextImports({
-        on: (name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) => ciHandlers.set(name, fn),
-        events: {
-          emit: (channel: string, data: unknown) => {
-            if (channel === 'pi-code:instructions') ext.emitInstruction(data)
-          },
-          on: () => () => {},
-        },
-      } as never)
-      const contextFiles = [
-        { path: join(proj, 'CLAUDE.md'), content: 'KEEP' },
-        { path: join(proj, 'vendor', 'CLAUDE.md'), content: 'EXCLUDED' },
-      ]
-      await ciHandlers.get('before_agent_start')?.({ systemPrompt: 'BASE', systemPromptOptions: { cwd: proj, contextFiles } }, {})
-      await flush()
-
-      expect(commandsRun()).toEqual(['il'])
-      expect(JSON.parse(recordFor('il').stdin).file_path).toBe(join(proj, 'CLAUDE.md'))
-    } finally {
-      setManagedSettingsPath(undefined)
-    }
-  })
-
-  it('runs no hook when the matcher misses the load reason', async () => {
-    const { ext, proj } = await withHooks({ InstructionsLoaded: [{ matcher: 'path_glob_match', hooks: [{ command: 'lazy' }] }] })
-
-    await ext.emitInstruction({ file_path: join(proj, 'CLAUDE.md'), memory_type: 'Project', load_reason: 'session_start' })
-
-    expect(commandsRun()).toEqual([])
-  })
-
-  it('bridges a lazy path_glob_match event from the bus with its globs and trigger', async () => {
-    const { ext, proj } = await withHooks({ InstructionsLoaded: [{ matcher: 'path_glob_match', hooks: [{ command: 'lazy' }] }] })
-    const rule = join(proj, '.claude', 'rules', 'sql.md')
-
-    await ext.emitInstruction({ file_path: rule, memory_type: 'Project', load_reason: 'path_glob_match', globs: ['db/**'], trigger_file_path: join(proj, 'db', 'schema.sql') })
-
-    expect(commandsRun()).toEqual(['lazy'])
-    expect(JSON.parse(recordFor('lazy').stdin)).toEqual({ ...COMMON, cwd: proj, hook_event_name: 'InstructionsLoaded', file_path: rule, memory_type: 'Project', load_reason: 'path_glob_match', globs: ['db/**'], trigger_file_path: join(proj, 'db', 'schema.sql') })
-  })
-
-  it('bridges an include event and honors a pipe-list matcher across reasons', async () => {
-    const { ext, proj } = await withHooks({ InstructionsLoaded: [{ matcher: 'path_glob_match|include', hooks: [{ command: 'lazy' }] }] })
-
-    await ext.emitInstruction({ file_path: join(proj, 'style.md'), memory_type: 'Project', load_reason: 'include', parent_file_path: join(proj, 'CLAUDE.md') })
-    expect(commandsRun()).toEqual(['lazy'])
-    expect(JSON.parse(recordFor('lazy').stdin).parent_file_path).toBe(join(proj, 'CLAUDE.md'))
-
-    await ext.emitInstruction({ file_path: join(proj, 'CLAUDE.md'), memory_type: 'Project', load_reason: 'session_start' })
-    expect(commandsRun()).toEqual(['lazy'])
-  })
-
-  it('is observational: exit codes, block decisions and systemMessage output are all ignored', async () => {
-    const { ext, proj } = await withHooks({ InstructionsLoaded: [{ hooks: [{ command: 'il' }] }] })
-    script('il', { stdout: [JSON.stringify({ systemMessage: 'warn', decision: 'block', continue: false })], stderr: ['angry'], code: 2 })
-
-    await ext.emitInstruction({ file_path: join(proj, 'CLAUDE.md'), memory_type: 'Project', load_reason: 'session_start' })
-    await flush()
-
-    expect(commandsRun()).toEqual(['il'])
-    expect(ext.notes).toEqual([])
-    expect(ext.sent).toEqual([])
-  })
-
-  it('ignores malformed bus payloads and events arriving before session_start', async () => {
-    const valid = { file_path: '/x/CLAUDE.md', memory_type: 'Project', load_reason: 'path_glob_match' }
-    writeSettings(hoisted.home, 'settings.json', { InstructionsLoaded: [{ hooks: [{ command: 'lazy' }] }] })
-    const fresh = setupExtension()
-    await fresh.emitInstruction(valid)
-    expect(commandsRun()).toEqual([])
-
-    await fresh.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    await fresh.emitInstruction({ file_path: '/x/CLAUDE.md', load_reason: 'path_glob_match' })
-    await fresh.emitInstruction('junk')
-    expect(commandsRun()).toEqual([])
-
-    await fresh.emitInstruction(valid)
-    expect(commandsRun()).toEqual(['lazy'])
-  })
-})
-
-describe('hooks MCP tool aliases', () => {
-  const withHooks = async (config: Record<string, unknown>) => {
-    writeSettings(hoisted.home, 'settings.json', config)
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    return ext
-  }
-
-  it("fires a Claude mcp__ matcher against pi's server_tool name and reports the Claude name", async () => {
-    const ext = await withHooks({ PreToolUse: [{ matcher: 'mcp__github__.*', hooks: [{ command: 'guard' }] }] })
-    ext.emitMcpTools([{ pi: 'github_create_issue', claude: 'mcp__github__create_issue' }])
-    await ext.toolCall('github_create_issue', { title: 't' })
-    expect(commandsRun()).toEqual(['guard'])
-    expect(JSON.parse(recordFor('guard').stdin)).toEqual({ ...COMMON, hook_event_name: 'PreToolUse', tool_name: 'mcp__github__create_issue', tool_input: { title: 't' }, tool_use_id: 't1' })
-  })
-
-  it('does not fire the mcp__ matcher when no alias was published', async () => {
-    const ext = await withHooks({ PreToolUse: [{ matcher: 'mcp__github__.*', hooks: [{ command: 'guard' }] }] })
-    await ext.toolCall('github_create_issue', {})
-    expect(commandsRun()).toEqual([])
-  })
-
-  it('reports the Claude name in PostToolUse payloads for aliased tools', async () => {
-    const ext = await withHooks({ PostToolUse: [{ matcher: 'mcp__github__.*', hooks: [{ command: 'post' }] }] })
-    ext.emitMcpTools([{ pi: 'github_create_issue', claude: 'mcp__github__create_issue' }])
-    await ext.toolResult('github_create_issue', { input: { title: 't' }, content: [{ type: 'text', text: 'ok' }] })
-    expect(commandsRun()).toEqual(['post'])
-    expect(JSON.parse(recordFor('post').stdin)).toEqual({ ...COMMON, hook_event_name: 'PostToolUse', tool_name: 'mcp__github__create_issue', tool_input: { title: 't' }, tool_use_id: 't1', tool_response: { content: [{ type: 'text', text: 'ok' }], isError: false } })
-  })
-
-  it('reports permission_mode plan while plan mode is active', async () => {
-    const ext = await withHooks({ PreToolUse: [{ hooks: [{ command: 'guard' }] }] })
-    ext.emitPlanMode({ active: true })
-    await ext.toolCall('read', { path: 'a' })
-    expect(JSON.parse(recordFor('guard').stdin).permission_mode).toBe('plan')
-    hoisted.calls.length = 0
-    ext.emitPlanMode({ active: false })
-    await ext.toolCall('read', { path: 'a' })
-    expect(JSON.parse(recordFor('guard').stdin).permission_mode).toBe('default')
-  })
-
-  it('ignores a malformed plan-mode payload from the bus', async () => {
-    const ext = await withHooks({ PreToolUse: [{ hooks: [{ command: 'guard' }] }] })
-    ext.emitPlanMode({ active: 'yes' })
-    await ext.toolCall('read', { path: 'a' })
-    expect(JSON.parse(recordFor('guard').stdin).permission_mode).toBe('default')
-  })
-
-  it('ignores a malformed alias payload from the bus', async () => {
-    const ext = await withHooks({ PreToolUse: [{ matcher: 'mcp__github__.*', hooks: [{ command: 'guard' }] }] })
-    ext.emitMcpTools([{ pi: 'github_create_issue' }])
-    ext.emitMcpTools('junk')
-    await ext.toolCall('github_create_issue', {})
-    expect(commandsRun()).toEqual([])
   })
 })
 

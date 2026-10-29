@@ -25,12 +25,11 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { expandCommand, shellExecutionDisabled } from './commands.ts'
+import { expandCommand, shellExecutionDisabled } from './internal/skill-expansion.ts'
 import { parseCommandFile } from './internal/command-file.ts'
 import { claudeConfigDir } from './internal/config-dir.ts'
 import { parseClaudeFrontmatter } from './internal/frontmatter.ts'
 import { managedSettingsFile } from './internal/managed-settings.ts'
-import { isProjectApprovedSilently } from './internal/project-approval.ts'
 import { ancestorDirs } from './internal/project-root.ts'
 import { claudeSettingsChain, readSettingsChain } from './internal/settings-chain.ts'
 import { SKILL_HOOKS_CHANNEL } from './internal/skill-hooks.ts'
@@ -111,7 +110,7 @@ export default function skillsExtension(pi: ExtensionAPI) {
   pi.on('resources_discover', (_event, ctx) => {
     // resources_discover fires after session_start, so the approval is already
     // resolved; reading it silently keeps a second trust dialog off the screen.
-    const skillPaths = skillDirs(ctx.cwd, os.homedir(), isProjectApprovedSilently(ctx))
+    const skillPaths = skillDirs(ctx.cwd, os.homedir(), ctx.isProjectTrusted?.() === true)
     return skillPaths.length > 0 ? { skillPaths } : undefined
   })
 
@@ -220,8 +219,7 @@ async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: Ext
     // failing the invocation over the dynamic features it cannot have.
     return
   }
-  // Claude registers hooks a skill's frontmatter declares when the skill is
-  // invoked, for the rest of the session; the hooks extension owns running them,
+  // Hooks activate only on explicit invocation, and expire when the run settles.
   // so the declaration is announced over the shared bus.
   const frontmatter = parseClaudeFrontmatter<Record<string, unknown>>(content).frontmatter
   const contextMode = String(frontmatter.context ?? '')
@@ -234,7 +232,7 @@ async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: Ext
   publishSkillHooks(pi, name, frontmatter)
   let expanded: string
   try {
-    expanded = await expandCommand(pi, parsed, args, { cwd: ctx.cwd }, found.filePath, undefined, { allowShell: !shellExecutionDisabled(ctx.cwd, os.homedir(), trusted) })
+    expanded = await expandCommand(pi, parsed, args, { cwd: ctx.cwd }, found.filePath, { allowShell: !shellExecutionDisabled(ctx.cwd, os.homedir(), trusted) })
   } catch (error) {
     // A failed injected command aborts the invocation, as it does for a command: pi logs a
     // throwing input handler and continues with the raw text, which would send the body
