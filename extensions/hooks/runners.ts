@@ -162,12 +162,6 @@ export const runHookCommand: HookCommandRunner = (command, payload, timeoutMs, {
     // payload survive verbatim). Without args the command string goes to the platform's
     // shell, or to PowerShell when the hook says `shell: "powershell"`. Both share the
     // same detached process group, so killTree reaches the descendants either way.
-    const target = Array.isArray(args) ? { file: command, spawnArgs: args.map((arg) => substituteArguments(arg, payload)) } : shellInvocation(command, shell)
-    if (!target) {
-      // Marked like a spawn failure so a gated event fails closed rather than reading as an allow.
-      resolve({ code: 0, stdout: '', stderr: 'no shell found: install Git for Windows or PowerShell', timedOut: false, spawnFailed: true })
-      return
-    }
     // On Windows `detached` means DETACHED_PROCESS, which gives a console child its own
     // window; windowsHide keeps every hook invisible (a no-op elsewhere).
     // node defers only a few spawn errors to the 'error' event; the rest (E2BIG from a
@@ -175,7 +169,21 @@ export const runHookCommand: HookCommandRunner = (command, payload, timeoutMs, {
     // reject the runner and lose every sibling hook's verdict for the event.
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(target.file, target.spawnArgs, { stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true, env })
+      if (Array.isArray(args)) {
+        // Keep executable paths separate from shell source, including paths containing shell syntax.
+        child = spawn(
+          command,
+          args.map((arg) => substituteArguments(arg, payload)),
+          { stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true, shell: false, env },
+        )
+      } else {
+        const target = shellInvocation(command, shell)
+        if (!target) {
+          resolve({ code: 0, stdout: '', stderr: 'no shell found: install Git for Windows or PowerShell', timedOut: false, spawnFailed: true })
+          return
+        }
+        child = spawn(target.file, target.spawnArgs, { stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true, shell: false, env })
+      }
     } catch (error) {
       resolve({ code: 0, stdout: '', stderr: errorMessage(error), timedOut: false, spawnFailed: true })
       return

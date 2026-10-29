@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -123,6 +123,13 @@ describe('runHookCommand exec form (real shell)', () => {
     const payload = { k: 'v' }
     const result = await runHookCommand(process.execPath, payload, 5000, { args: [...ECHO_ARGV, '$ARGUMENTS'] })
     expect(result.stdout).toBe(`${JSON.stringify(payload)}\n`)
+  })
+
+  it.skipIf(process.platform === 'win32')('does not interpret shell syntax in the executable path', async () => {
+    const executable = join(tempDir(), "node $(printf INJECTED) ; 'quoted'")
+    symlinkSync(process.execPath, executable)
+    const result = await runHookCommand(executable, {}, 5000, { args: [...ECHO_ARGV, 'literal'] })
+    expect(result).toMatchObject({ code: 0, stdout: 'literal\n', timedOut: false })
   })
 })
 

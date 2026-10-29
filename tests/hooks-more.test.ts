@@ -245,7 +245,7 @@ describe('runHookCommand process wiring', () => {
     const expectedEnv: NodeJS.ProcessEnv = { ...process.env, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_PID: String(process.pid) }
     if (process.stdout.columns) expectedEnv.COLUMNS = String(process.stdout.columns)
     if (process.stdout.rows) expectedEnv.LINES = String(process.stdout.rows)
-    expect(record.options).toEqual({ stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true, env: expectedEnv })
+    expect(record.options).toEqual({ stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true, shell: false, env: expectedEnv })
   })
 
   it('marks the hook child with CLAUDECODE=1 even when the parent env lacks it', async () => {
