@@ -346,6 +346,71 @@ describe('skill frontmatter hooks publication', () => {
   })
 })
 
+describe('hooks from any pi-resolved skill', () => {
+  const setupNative = (cwd: string, name: string, filePath: string) => {
+    const handlers = new Map<string, (event: Record<string, unknown>, ctx: unknown) => Promise<unknown>>()
+    const emitted: Array<{ channel: string; data: unknown }> = []
+    skillsExt({
+      on: (event: string, fn: (data: Record<string, unknown>, ctx: unknown) => Promise<unknown>) => handlers.set(event, fn),
+      getCommands: () => [{ name: `skill:${name}`, source: 'skill', sourceInfo: { path: filePath } }],
+      events: { emit: (channel: string, data: unknown) => emitted.push({ channel, data }), on: () => () => {} },
+    } as never)
+    return {
+      emitted,
+      input: (text: string, source = 'interactive') => handlers.get('input')?.({ text, source }, { cwd }),
+      discover: () => handlers.get('resources_discover')?.({ reason: 'startup' }, { cwd }),
+    }
+  }
+
+  it.each(['.pi/skills', '.agents/skills', 'extra/package-skills'])('registers hooks from pi-discovered %s only on explicit invocation', async (root) => {
+    const cwd = tempDir('native-skills-')
+    hoisted.home = tempDir('cs-home-')
+    const skillFile = join(cwd, root, 'verify', 'SKILL.md')
+    mkdirSync(join(cwd, root, 'verify'), { recursive: true })
+    writeFileSync(skillFile, '---\nname: verify\ndescription: run checks\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: ./verify.sh\n---\nNative pi body')
+    const { input, discover, emitted } = setupNative(cwd, 'verify', skillFile)
+
+    await discover()
+    await input('read the verify skill')
+    await input('/skill:other')
+    await input('/skill:verify', 'extension')
+    expect(emitted).toEqual([])
+
+    // Native pi, not pi-code, expands the command's body.
+    expect(await input('/skill:verify tests')).toBeUndefined()
+    expect(emitted).toEqual([{
+      channel: 'pi-code:skill-hooks',
+      data: { skillName: 'verify', hooks: { Stop: [{ hooks: [{ type: 'command', command: './verify.sh' }] }] } },
+    }])
+  })
+
+  it('uses the path pi actually resolved when a native skill shadows a Claude skill', async () => {
+    const cwd = tempDir('native-skills-')
+    hoisted.home = tempDir('cs-home-')
+    const nativeFile = join(cwd, '.pi', 'skills', 'guard', 'SKILL.md')
+    const claudeFile = join(hoisted.home, '.claude', 'skills', 'guard', 'SKILL.md')
+    mkdirSync(join(cwd, '.pi', 'skills', 'guard'), { recursive: true })
+    mkdirSync(join(hoisted.home, '.claude', 'skills', 'guard'), { recursive: true })
+    writeFileSync(nativeFile, '---\nname: guard\ndescription: native\nhooks:\n  Stop:\n    - hooks: [{ command: native.sh }]\n---\nNative')
+    writeFileSync(claudeFile, '---\nname: guard\ndescription: claude\nhooks:\n  Stop:\n    - hooks: [{ command: claude.sh }]\n---\nClaude')
+    const { input, emitted } = setupNative(cwd, 'guard', nativeFile)
+    expect(await input('/skill:guard')).toBeUndefined()
+    expect(emitted).toEqual([{
+      channel: 'pi-code:skill-hooks',
+      data: { skillName: 'guard', hooks: { Stop: [{ hooks: [{ command: 'native.sh' }] }] } },
+    }])
+  })
+
+  it('does not block pi expansion for missing or invalid skill files', async () => {
+    const cwd = tempDir('native-skills-')
+    hoisted.home = tempDir('cs-home-')
+    const filePath = join(cwd, 'no-longer-here', 'SKILL.md')
+    const { input, emitted } = setupNative(cwd, 'missing', filePath)
+    expect(await input('/skill:missing')).toBeUndefined()
+    expect(emitted).toEqual([])
+  })
+})
+
 describe('context: fork and skillOverrides', () => {
   it('runs a context: fork skill through the subagent seam and returns its result', async () => {
     // Claude: "Add context: fork ... The skill content becomes the prompt that

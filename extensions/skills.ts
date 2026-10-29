@@ -5,7 +5,9 @@
  * existing `.claude/skills` directories (user then project) as skill paths, so
  * pi discovers Claude Code skills the same way it loads its own `.pi/skills`.
  * pi implements the Agent Skills standard, so `SKILL.md` directories work
- * unchanged and register as `/skill:name`.
+ * unchanged and register as `/skill:name`. For skills pi discovers via
+ * any other source, the input handler reads hooks from pi's resolved skill path
+ * but leaves expansion to pi; hooks register only on explicit invocation.
  *
  * Claude documents that a command file and a skill "work the same way", so a
  * SKILL.md body carries the dynamic features command bodies do: `` !`cmd` ``
@@ -247,13 +249,40 @@ function parseSkillInvocation(rawText: string): { name: string; args: string } |
   return { name, args: space === -1 ? '' : text.slice(space + 1).trim() }
 }
 
+/** Publish only explicitly invoked skills' declared hooks. The actual hook
+ * lifecycle belongs to hooks/index.ts; discovery alone must not register them. */
+function publishSkillHooks(pi: ExtensionAPI, name: string, frontmatter: Record<string, unknown>): void {
+  const declaredHooks = frontmatter.hooks
+  if (isRecord(declaredHooks)) pi.events?.emit(SKILL_HOOKS_CHANNEL, { skillName: name, hooks: declaredHooks })
+}
+
+/** pi-native skills keep their native body expansion. Read only the resolved file's
+ * frontmatter, including for skills supplied by packages or custom search paths. */
+function publishSkillHooksFromFile(pi: ExtensionAPI, name: string, filePath: string): void {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8')
+    publishSkillHooks(pi, name, parseClaudeFrontmatter<Record<string, unknown>>(content).frontmatter)
+  } catch {
+    // pi owns expansion and its own diagnostics. Bad YAML or an unreadable file
+    // must not prevent the invocation from reaching pi unchanged.
+  }
+}
+
 async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: ExtensionContext): Promise<{ action: 'transform'; text: string } | { action: 'handled' } | undefined> {
   const invocation = parseSkillInvocation(rawText)
   if (!invocation) return
   const { name, args } = invocation
   const trusted = isProjectApprovedSilently(ctx)
   const found = findClaudeSkill(name, skillDirs(ctx.cwd, os.homedir(), trusted))
-  if (!found || shadowedByPi(pi, name, found.filePath)) return
+  // Only pi knows the complete set of loaded skills: built-in paths, .agents,
+  // installed packages, custom skillPaths and the paths contributed above.
+  // A non-Claude skill still uses pi's native expansion; we only register its
+  // frontmatter hooks when the user explicitly invokes /skill:name.
+  if (!found || shadowedByPi(pi, name, found.filePath)) {
+    const loaded = pi.getCommands?.().find((command) => command.source === 'skill' && command.name === `skill:${name}`)
+    if (loaded) publishSkillHooksFromFile(pi, name, loaded.sourceInfo.path)
+    return
+  }
   const refused = refusedByOverride(name, ctx, trusted)
   if (refused) return refused
   let parsed: ReturnType<typeof parseCommandFile>
@@ -271,10 +300,7 @@ async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: Ext
   // invoked, for the rest of the session; the hooks extension owns running them,
   // so the declaration is announced over the shared bus.
   const frontmatter = parseClaudeFrontmatter<Record<string, unknown>>(content).frontmatter
-  const declaredHooks = frontmatter.hooks
-  if (declaredHooks !== null && typeof declaredHooks === 'object' && !Array.isArray(declaredHooks)) {
-    pi.events?.emit(SKILL_HOOKS_CHANNEL, { skillName: name, hooks: declaredHooks })
-  }
+  publishSkillHooks(pi, name, frontmatter)
   let expanded: string
   try {
     expanded = await expandCommand(pi, parsed, args, { cwd: ctx.cwd }, found.filePath, undefined, { allowShell: !shellExecutionDisabled(ctx.cwd, os.homedir(), trusted) })
