@@ -8,8 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import contextImports from '../extensions/context-imports.ts'
 import hooksExtension, { type HookRunner, interpretHookResult, isBackgroundHook, loadHooks, matchingCommands, runHookCommand, runPreToolUse, runPromptHook, runUserPromptSubmit, sessionEndTimeoutMs, timeoutMs } from '../extensions/hooks/index.ts'
-import { setAgentRunner } from '../extensions/internal/agent-run.ts'
-import { setBackgroundAgentCounter } from '../extensions/internal/background-agents.ts'
 import { setManagedSettingsPath } from '../extensions/internal/managed-settings.ts'
 import { setMcpToolCaller } from '../extensions/internal/mcp-call.ts'
 import { setCompleteBackend } from '../extensions/internal/model-complete.ts'
@@ -231,7 +229,6 @@ const setupExtension = () => {
     emitMcpTools: (entries: unknown) => busHandlers.get('pi-code:mcp-tools')?.(entries),
     emitSkillHooks: (event: unknown) => busHandlers.get('pi-code:skill-hooks')?.(event),
     emitPlanMode: (state: unknown) => busHandlers.get('pi-code:plan-mode')?.(state),
-    emitSubagent: (event: unknown) => busHandlers.get('pi-code:subagent')?.(event),
     emitInstruction: (event: unknown) => busHandlers.get('pi-code:instructions')?.(event),
   }
 }
@@ -1004,25 +1001,6 @@ describe('hooks extension tool_call', () => {
     expect(decision).toEqual({ block: true, reason: 'looks risky' })
   })
 
-  it('runs a PreToolUse agent hook on the session model and blocks on its deny decision', async () => {
-    writeSettings(hoisted.home, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'agent', prompt: 'Inspect $ARGUMENTS' }] }] })
-    let seenModel: unknown
-    setAgentRunner(async (req) => {
-      seenModel = req.model
-      return '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"agent says no"}}'
-    })
-    try {
-      const ext = setupExtension()
-      await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-      const decision = await ext.toolCall('bash', { command: 'rm -rf /' }, 't1', { model: { id: 'session-model' } })
-      expect(decision).toEqual({ block: true, reason: 'agent says no' })
-      expect(seenModel).toBe('session-model')
-      expect(commandsRun()).toEqual([])
-    } finally {
-      setAgentRunner(undefined)
-    }
-  })
-
   it('lets the tool through when a prompt hook allows and there is no command hook to run', async () => {
     writeSettings(hoisted.home, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'prompt', prompt: 'ok? $ARGUMENTS' }] }] })
     setCompleteBackend(async () => ({ role: 'assistant', content: [{ type: 'text', text: '{"hookSpecificOutput":{"permissionDecision":"allow"}}' }], api: 'x', provider: 'x', model: 'm', usage: {}, stopReason: 'stop', timestamp: 0 }) as never)
@@ -1485,31 +1463,6 @@ describe('hooks extension notify-style events', () => {
     expect(commandsRun()).toEqual([])
   })
 
-  it('holds idle_prompt while a background subagent runs, then fires 60s after the turn its completion triggers', async () => {
-    // Claude: "Expect idle_prompt about 60 seconds after Claude finishes responding, and
-    // only if you haven't typed since and no background agent ... is still running." A
-    // finished background run wakes the parent with a new turn, whose end re-arms it.
-    vi.useFakeTimers()
-    let running = 1
-    setBackgroundAgentCounter(() => running)
-    try {
-      const ext = await withHooks({ Notification: [{ matcher: 'idle_prompt', hooks: [{ command: 'notify-idle' }] }] })
-      await ext.agentEnd()
-      await vi.advanceTimersByTimeAsync(120_000)
-      expect(commandsRun()).toEqual([])
-
-      running = 0
-      await ext.beforeAgentStart()
-      await ext.agentEnd()
-      await vi.advanceTimersByTimeAsync(59_999)
-      expect(commandsRun()).toEqual([])
-      await vi.advanceTimersByTimeAsync(1)
-      expect(commandsRun()).toEqual(['notify-idle'])
-    } finally {
-      setBackgroundAgentCounter(undefined)
-    }
-  })
-
   it('runs Stop only at agent_before_settle, after agent_end', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopper' }] }] })
     await ext.agentEnd([{ role: 'assistant', content: 'provisional result' }])
@@ -1964,80 +1917,9 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
     expect(isBackgroundHook({ command: 'x', async: true })).toBe(true)
     expect(isBackgroundHook({ type: 'command', command: 'x', asyncRewake: true })).toBe(true)
     expect(isBackgroundHook({ command: 'x' })).toBe(false)
-    for (const type of ['http', 'prompt', 'agent', 'mcp_tool']) {
+    for (const type of ['http', 'prompt', 'mcp_tool']) {
       expect(isBackgroundHook({ type, command: 'x', async: true, asyncRewake: true })).toBe(false)
     }
-  })
-})
-
-describe('hooks subagent lifecycle', () => {
-  const withHooks = async (config: Record<string, unknown>) => {
-    writeSettings(hoisted.home, 'settings.json', config)
-    const ext = setupExtension()
-    const proj = tempDir('hooks-proj-')
-    await ext.sessionStart('startup', { cwd: proj })
-    return { ext, proj }
-  }
-
-  it('runs SubagentStart hooks matching the agent type through the pre-spawn seam', async () => {
-    // SubagentStart moved off the bus start event onto the pre-spawn seam so its
-    // context can reach the child before its first prompt.
-    const { runSubagentStartHooks } = await import('../extensions/internal/subagent-hooks.ts')
-    const { proj } = await withHooks({ SubagentStart: [{ matcher: 'scout', hooks: [{ command: 'sub-start' }] }] })
-    await runSubagentStartHooks('scout', 'fg-abc')
-    expect(commandsRun()).toEqual(['sub-start'])
-    expect(JSON.parse(recordFor('sub-start').stdin)).toEqual({ ...COMMON, cwd: proj, hook_event_name: 'SubagentStart', agent_type: 'scout', agent_id: 'fg-abc' })
-  })
-
-  it('runs SubagentStop hooks when the child run completes', async () => {
-    const { ext, proj } = await withHooks({ SubagentStop: [{ matcher: 'scout', hooks: [{ command: 'sub-stop' }] }] })
-    await ext.emitSubagent({ phase: 'stop', agentType: 'scout', agentId: 'bg-1234' })
-    expect(commandsRun()).toEqual(['sub-stop'])
-    expect(JSON.parse(recordFor('sub-stop').stdin)).toEqual({ ...COMMON, cwd: proj, hook_event_name: 'SubagentStop', agent_type: 'scout', agent_id: 'bg-1234' })
-  })
-
-  // Claude: stopReason is the "message shown to the user when continue is false". The
-  // child has already finished, so there is nothing left to stop; the message still shows.
-  it('shows a SubagentStop hook stopReason when it returns continue false', async () => {
-    script('sub-stop', { stdout: ['{"continue":false,"stopReason":"child budget spent"}'] })
-    const { ext } = await withHooks({ SubagentStop: [{ hooks: [{ command: 'sub-stop' }] }] })
-    await ext.emitSubagent({ phase: 'stop', agentType: 'scout', agentId: 'bg-7' })
-    expect(ext.notes).toContainEqual({ msg: 'child budget spent', level: 'warning' })
-  })
-
-  it('passes last_assistant_message to SubagentStop hooks when the stop event carries it', async () => {
-    // Claude: SubagentStop hooks receive last_assistant_message so they need not
-    // parse the transcript for the subagent's final text.
-    const { ext } = await withHooks({ SubagentStop: [{ hooks: [{ command: 'sub-stop' }] }] })
-    await ext.emitSubagent({ phase: 'stop', agentType: 'scout', agentId: 'bg-9', lastAssistantMessage: 'the findings' })
-    expect(JSON.parse(recordFor('sub-stop').stdin).last_assistant_message).toBe('the findings')
-  })
-
-  it('does not run subagent hooks whose matcher misses the agent type', async () => {
-    const { ext } = await withHooks({ SubagentStart: [{ matcher: 'reviewer', hooks: [{ command: 'sub-start' }] }] })
-    await ext.emitSubagent({ phase: 'start', agentType: 'scout', agentId: 'fg-abc' })
-    expect(commandsRun()).toEqual([])
-  })
-
-  it('does not reject when the captured session ctx is disposed and its getters throw', async () => {
-    // The bus outlives the session: an event landing between /new disposing the ctx
-    // and the next session_start hits disposed getters, and nothing awaits a bus
-    // listener, so a throw here used to escape as an unhandled rejection.
-    // The stop phase is the one the bus listener handles (start is returned before the
-    // guarded block), so only a SubagentStop config with a stop event reaches the
-    // getters this test is about.
-    writeSettings(hoisted.home, 'settings.json', { SubagentStop: [{ hooks: [{ command: 'sub-stop' }] }] })
-    const ext = setupExtension()
-    const disposed = () => {
-      throw new Error('session disposed')
-    }
-    await ext.sessionStart('startup', {
-      cwd: tempDir('hooks-proj-'),
-      sessionManager: { getSessionId: disposed, getSessionFile: disposed },
-      ui: { notify: disposed },
-    })
-    const pending = ext.emitSubagent({ phase: 'stop', agentType: 'scout', agentId: 'fg-1' }) as unknown as Promise<void>
-    await expect(pending).resolves.toBeUndefined()
   })
 })
 
@@ -2816,7 +2698,7 @@ describe('hooks from skill frontmatter', () => {
     ext.emitSkillHooks({ skillName, hooks })
   }
 
-  it('registers skill hooks at invocation and keeps them for the rest of the session', async () => {
+  it('registers skill hooks at invocation until the agent settles', async () => {
     const ext = setupExtension()
     await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
     invokeSkill(ext, { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'skill-guard' }] }] })
@@ -2824,6 +2706,43 @@ describe('hooks from skill frontmatter', () => {
     await ext.toolCall('bash', {})
 
     expect(commandsRun()).toEqual(['skill-guard', 'skill-guard'])
+  })
+
+  it('expires skill hooks after settlement, but keeps ordinary settings hooks', async () => {
+    writeSettings(hoisted.home, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'settings-guard' }] }] })
+    const ext = setupExtension()
+    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
+    invokeSkill(ext, { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'skill-guard' }] }] })
+    await ext.toolCall('bash', {})
+    await ext.agentSettled()
+    await ext.toolCall('bash', {})
+    expect(commandsRun()).toEqual(['settings-guard', 'skill-guard', 'settings-guard'])
+  })
+
+  it('keeps skill Stop hooks across continuations and expires them only after settlement', async () => {
+    const ext = setupExtension()
+    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
+    invokeSkill(ext, { Stop: [{ hooks: [{ command: 'skill-stop' }] }] })
+    script('skill-stop', { stdout: ['{"decision":"block","reason":"keep going"}'] })
+    const first = await ext.agentBeforeSettle([{ role: 'assistant', content: 'not finished' }])
+    expect(first).toMatchObject({ continue: true })
+    expect(await ext.agentBeforeSettle([{ role: 'assistant', content: 'now finished' }])).toMatchObject({ continue: true })
+    await ext.agentSettled()
+    expect(await ext.agentBeforeSettle([{ role: 'assistant', content: 'next run' }])).toBeUndefined()
+    expect(commandsRun()).toEqual(['skill-stop', 'skill-stop'])
+  })
+
+  it('allows once hooks to run again only after a new explicit invocation in a later run', async () => {
+    const ext = setupExtension()
+    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
+    const hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'skill-once', once: true }] }] }
+    invokeSkill(ext, hooks)
+    await ext.toolCall('bash', {})
+    await ext.agentSettled()
+    await ext.toolCall('bash', {})
+    invokeSkill(ext, hooks)
+    await ext.toolCall('bash', {})
+    expect(commandsRun()).toEqual(['skill-once', 'skill-once'])
   })
 
   it('removes a once hook after its first successful run', async () => {
@@ -3084,141 +3003,6 @@ describe('hook error notices', () => {
     const result = (await ext.input('hello')) as { action: string; text?: string }
     expect(result.action).toBe('continue')
     expect(ext.notes.some((note) => note.msg.includes('hook error'))).toBe(true)
-  })
-})
-
-describe('hooks SubagentStart context seam', () => {
-  it('serves SubagentStart hooks through the pre-spawn runner, returning their context', async () => {
-    // Claude: SubagentStart hooks inject additionalContext into the subagent
-    // before its first prompt, so they must run before the child spawns; the
-    // subagent extension calls this seam pre-spawn.
-    const { runSubagentStartHooks } = await import('../extensions/internal/subagent-hooks.ts')
-    script('sub-start', { stdout: ['{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"security rules"}}'], code: 0 })
-    writeSettings(hoisted.home, 'settings.json', { SubagentStart: [{ matcher: 'scout', hooks: [{ command: 'sub-start' }] }] })
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-
-    const contexts = await runSubagentStartHooks('scout', 'fg-1')
-    expect(commandsRun()).toEqual(['sub-start'])
-    expect(contexts).toEqual(['security rules'])
-    expect(JSON.parse(recordFor('sub-start').stdin)).toMatchObject({ hook_event_name: 'SubagentStart', agent_type: 'scout', agent_id: 'fg-1' })
-  })
-
-  it('no longer double-runs SubagentStart from the bus start event', async () => {
-    writeSettings(hoisted.home, 'settings.json', { SubagentStart: [{ hooks: [{ command: 'sub-start' }] }] })
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-
-    await ext.emitSubagent({ phase: 'start', agentType: 'scout', agentId: 'fg-1' })
-    expect(commandsRun()).toEqual([])
-  })
-})
-
-describe('hooks from agent frontmatter in the child', () => {
-  const withAgentHooks = async (hooks: unknown) => {
-    process.env.PI_CODE_SUBAGENT = '1'
-    process.env.PI_CODE_AGENT_HOOKS = JSON.stringify({ agent: 'scout', id: 'fg-9', hooks })
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    return ext
-  }
-
-  afterEach(() => {
-    delete process.env.PI_CODE_SUBAGENT
-    delete process.env.PI_CODE_AGENT_HOOKS
-  })
-
-  it('runs agent-frontmatter hooks inside the subagent child', async () => {
-    const ext = await withAgentHooks({ PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'agent-guard' }] }] })
-    await ext.toolCall('bash', {})
-
-    expect(commandsRun()).toEqual(['agent-guard'])
-  })
-
-  it('fires the converted Stop hook as SubagentStop when the child finishes', async () => {
-    // Claude converts a Stop hook in agent frontmatter to SubagentStop, the event
-    // fired when the subagent completes; in the child that is its own agent end.
-    const ext = await withAgentHooks({ SubagentStop: [{ hooks: [{ command: 'agent-done' }] }] })
-    await ext.agentEnd()
-
-    expect(commandsRun()).toEqual(['agent-done'])
-    expect(JSON.parse(recordFor('agent-done').stdin)).toMatchObject({ hook_event_name: 'SubagentStop', agent_type: 'scout', agent_id: 'fg-9' })
-  })
-})
-
-describe('user-level hooks inside a subagent child', () => {
-  // Claude: settings hooks "also run inside subagents": tool events fire the same configured
-  // hooks, carrying agent_id. But "Stop: runs when the main Claude Code agent has finished
-  // responding", a subagent's completion is SubagentStop, and a subagent run is neither a
-  // session (SessionStart, SessionEnd) nor a prompt the user submitted (UserPromptSubmit).
-  // The child is a full pi process loading the same settings, so every one of them fired in
-  // it: a Stop hook (a finish sound, "block until tests pass") ran once per subagent, and
-  // a blocking one forced each read-only child to carry on.
-  const withUserHooksInChild = async () => {
-    writeSettings(hoisted.home, 'settings.json', {
-      SessionStart: [{ hooks: [{ command: 'user-session-start' }] }],
-      UserPromptSubmit: [{ hooks: [{ command: 'user-prompt-submit' }] }],
-      PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'user-tool-guard' }] }],
-      Stop: [{ hooks: [{ command: 'user-stop' }] }],
-      SubagentStop: [{ hooks: [{ command: 'user-subagent-stop' }] }],
-      SessionEnd: [{ hooks: [{ command: 'user-session-end' }] }],
-    })
-    process.env.PI_CODE_SUBAGENT = '1'
-    process.env.PI_CODE_AGENT_HOOKS = JSON.stringify({ agent: 'scout', id: 'fg-9', hooks: { SubagentStop: [{ hooks: [{ command: 'agent-done' }] }] } })
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    return ext
-  }
-
-  afterEach(() => {
-    delete process.env.PI_CODE_SUBAGENT
-    delete process.env.PI_CODE_AGENT_HOOKS
-  })
-
-  it('fires no SessionStart, UserPromptSubmit or SessionEnd', async () => {
-    const ext = await withUserHooksInChild()
-    await ext.input('survey the auth module')
-    await ext.shutdown('quit')
-
-    expect(commandsRun()).toEqual([])
-  })
-
-  it("fires no Stop hook, and no settings-level SubagentStop, at the child's own end", async () => {
-    const ext = await withUserHooksInChild()
-    await ext.agentEnd()
-
-    // The agent's own frontmatter Stop, converted to SubagentStop, is the only one that runs
-    // here: the parent fires the settings-level SubagentStop when the child completes.
-    expect(commandsRun()).toEqual(['agent-done'])
-  })
-
-  it('arms no idle notification: no user is waiting on a child', async () => {
-    vi.useFakeTimers()
-    writeSettings(hoisted.home, 'settings.json', { Notification: [{ matcher: 'idle_prompt', hooks: [{ command: 'user-idle' }] }] })
-    process.env.PI_CODE_SUBAGENT = '1'
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    await ext.agentEnd()
-    await vi.advanceTimersByTimeAsync(120_000)
-
-    expect(commandsRun()).toEqual([])
-  })
-
-  it('still fires tool event hooks, which Claude runs inside subagents', async () => {
-    const ext = await withUserHooksInChild()
-    await ext.toolCall('bash', {})
-
-    expect(commandsRun()).toEqual(['user-tool-guard'])
-  })
-
-  it('keeps firing every event in the main session, where the guard must not apply', async () => {
-    writeSettings(hoisted.home, 'settings.json', { Stop: [{ hooks: [{ command: 'user-stop' }] }], SessionEnd: [{ hooks: [{ command: 'user-session-end' }] }] })
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    await ext.agentBeforeSettle()
-    await ext.shutdown('quit')
-
-    expect(commandsRun()).toEqual(['user-stop', 'user-session-end'])
   })
 })
 

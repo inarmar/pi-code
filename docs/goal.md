@@ -25,7 +25,6 @@ The evaluator runs in-process on the session model (`ANTHROPIC_DEFAULT_HAIKU_MOD
 Guards, each mirroring Claude's documented behavior:
 
 - **Block cap**: the Stop hooks' consecutive-block cap (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default 8, `0` disables) also bounds a goal. That many not-met verdicts in a row on turns that ran no tool pause the loop with a warning; the goal stays set and evaluation resumes after the next user prompt. A tool-using turn or a user prompt resets the count.
-- **Background work**: a turn that ends while a subagent is still running is not evaluated; the next turn that ends with none running is. A check-in turn is injected once the wait reaches `CLAUDE_CODE_GOAL_CHECKIN_MINUTES` (30 by default, `0` turns check-ins off), listing the running subagents and asking the model to check on them; later check-ins wait twice as long each, up to four times the first interval, and at most three are started while idle between user prompts (a check-in that comes due mid-turn is delivered when that turn ends).
 - **Interrupts and errors**: a turn the user interrupted or that failed on an error is not evaluated, and an interrupt during the evaluation cancels it with the goal left set. Once the run settles, an error you have to fix clears the goal with `Goal cleared after an unrecoverable error (<kind>)`: authentication, exhausted credits, a context overflow, or an unavailable model. Rate limits, overloads, and network errors leave the goal set.
 - **Evaluator failures**: no model, a provider error, a timeout (30 seconds), or an unreadable verdict end the turn with a warning and leave the goal set.
 
@@ -40,7 +39,6 @@ As in Claude, `/goal` rides the hooks system: it refuses, saying why, when hooks
 ## Divergences from Claude Code
 
 - pi has no small fast model tier, so the evaluator defaults to the session model rather than Haiku; `ANTHROPIC_DEFAULT_HAIKU_MODEL` selects among the models this user can run instead of naming an arbitrary id.
-- pi's only background work is subagents, so deferral and check-ins track those; there is no background shell.
 - The goal loop runs beside the hooks extension's Stop path rather than inside it: a settings `Stop` hook and a goal both evaluate at turn end, and when both continue, the second continuation is delivered into the first's turn. The goal does not set `stop_hook_active` on Stop hook payloads.
 - The transcript view shows the evaluator's verdict and reason as a `[goal]` line; there is no Ctrl+O detail toggle.
 - Claude pins the evaluator's reply with a JSON schema; pi's one-off completion cannot, so the instruction asks for JSON only and a reply that opens with a bare `yes` or `no` (how small local models tend to answer) is read as that verdict with the reply as its reason. Anything else is an evaluator error.

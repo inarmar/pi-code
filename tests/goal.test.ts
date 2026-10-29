@@ -8,7 +8,6 @@ import goalExtension from '../extensions/goal.ts'
 import { EVALUATOR_SYSTEM, NO_GOAL_TEXT } from '../extensions/internal/goal-evaluator.ts'
 import { setManagedSettingsPath } from '../extensions/internal/managed-settings.ts'
 import { setCompleteBackend } from '../extensions/internal/model-complete.ts'
-import { SUBAGENT_CHANNEL } from '../extensions/internal/subagent-events.ts'
 
 type Handler = (event: any, ctx: any) => Promise<unknown> | unknown
 type Sent = { message: { customType: string; content: string; display: boolean }; options: any }
@@ -115,7 +114,6 @@ function setup(opts: SetupOptions = {}) {
     agentEnd: (messages: unknown[] = [assistant('working on it')]) => on('agent_end')({ type: 'agent_end', messages }, ctx),
     settled: () => on('agent_settled')({ type: 'agent_settled' }, ctx),
     input: (text: string, source = 'interactive') => on('input')({ type: 'input', text, source }, ctx),
-    subagent: (phase: 'start' | 'stop', agentId: string, agentType = 'Explore') => bus.get(SUBAGENT_CHANNEL)?.({ phase, agentType, agentId }),
     setBranch: (next: unknown[]) => {
       branch = next
     },
@@ -648,145 +646,6 @@ describe('goal no-progress cap', () => {
     await runTurns(t, 2, false)
     expect(t.continuations()).toHaveLength(1)
     expect(t.lastNote().msg).toMatch(/^Goal paused after 2 turns/)
-  })
-})
-
-describe('goal background work', () => {
-  it('skips evaluation while a subagent runs and evaluates once it stops', async () => {
-    const t = setup()
-    await t.goal('done')
-    notMet('x')
-    t.subagent('start', 'run-1')
-    await t.agentEnd()
-    expect(calls).toEqual([])
-    t.subagent('stop', 'run-1')
-    await t.agentEnd()
-    expect(calls).toHaveLength(1)
-    expect(t.continuations()).toHaveLength(1)
-  })
-
-  /** A goal whose turn just ended with `run-1` still running, on fake timers. */
-  const deferred = async () => {
-    vi.useFakeTimers()
-    const t = setup()
-    await t.goal('done')
-    t.subagent('start', 'run-1', 'Explore')
-    await t.agentEnd()
-    return t
-  }
-
-  it('injects a check-in turn once background work has kept the goal waiting for 30 minutes', async () => {
-    const t = await deferred()
-    await vi.advanceTimersByTimeAsync(29 * 60_000)
-    expect(t.sent).toHaveLength(1)
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(t.sent).toHaveLength(2)
-    expect(t.sent[1].message.content).toContain('Goal check-in: «done» is still active')
-    expect(t.sent[1].message.content).toContain('deferred for 30 min')
-    expect(t.sent[1].message.content).toContain('- run-1 · subagent Explore')
-    expect(t.sent[1].options).toEqual({ triggerTurn: true })
-  })
-
-  it('doubles the wait after each check-in whose turn ends with the work still running', async () => {
-    const t = await deferred()
-    await vi.advanceTimersByTimeAsync(30 * 60_000)
-    await t.agentEnd()
-    await vi.advanceTimersByTimeAsync(59 * 60_000)
-    expect(t.sent).toHaveLength(2)
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(t.sent).toHaveLength(3)
-    expect(t.sent[2].message.content).toContain('deferred for 90 min')
-  })
-
-  it('says idle check-ins are paused on the third one and starts no fourth while idle', async () => {
-    const t = await deferred()
-    await vi.advanceTimersByTimeAsync(30 * 60_000)
-    await t.agentEnd()
-    await vi.advanceTimersByTimeAsync(60 * 60_000)
-    await t.agentEnd()
-    await vi.advanceTimersByTimeAsync(120 * 60_000)
-    expect(t.sent).toHaveLength(4)
-    expect(t.sent[3].message.content).toContain('Idle check-ins are paused until your next message')
-    await t.agentEnd()
-    await vi.advanceTimersByTimeAsync(120 * 60_000)
-    expect(t.sent).toHaveLength(4)
-  })
-
-  it('delivers a check-in past the idle cap at the next turn end instead', async () => {
-    const t = await deferred()
-    for (const minutes of [30, 60, 120]) {
-      await vi.advanceTimersByTimeAsync(minutes * 60_000)
-      await t.agentEnd()
-    }
-    await vi.advanceTimersByTimeAsync(120 * 60_000)
-    expect(t.sent).toHaveLength(4)
-    await t.agentEnd()
-    expect(t.sent).toHaveLength(5)
-    expect(t.sent[4].message.content).toContain('Goal check-in')
-  })
-
-  it('delivers a check-in that came due mid-turn at the next turn end', async () => {
-    vi.useFakeTimers()
-    const t = setup()
-    await t.goal('done')
-    t.subagent('start', 'run-1')
-    await t.agentEnd()
-    t.setIdle(false)
-    await vi.advanceTimersByTimeAsync(30 * 60_000)
-    expect(t.sent).toHaveLength(1)
-    await t.agentEnd()
-    expect(t.sent).toHaveLength(2)
-    expect(t.sent[1].message.content).toContain('Goal check-in')
-  })
-
-  it('nudges the model to continue when the work stopped without reporting back', async () => {
-    vi.useFakeTimers()
-    const t = setup()
-    await t.goal('done')
-    t.subagent('start', 'run-1')
-    await t.agentEnd()
-    t.subagent('stop', 'run-1')
-    await vi.advanceTimersByTimeAsync(30 * 60_000)
-    expect(t.sent[1].message.content).toContain('no longer running')
-    expect(t.sent[1].message.content).toContain('Continue toward the goal')
-  })
-
-  it('turns check-ins off with CLAUDE_CODE_GOAL_CHECKIN_MINUTES=0 and honors a custom interval', async () => {
-    vi.useFakeTimers()
-    process.env.CLAUDE_CODE_GOAL_CHECKIN_MINUTES = '0'
-    const off = setup()
-    await off.goal('done')
-    off.subagent('start', 'run-1')
-    await off.agentEnd()
-    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000)
-    expect(off.sent).toHaveLength(1)
-
-    process.env.CLAUDE_CODE_GOAL_CHECKIN_MINUTES = '2'
-    const quick = setup()
-    await quick.goal('done')
-    quick.subagent('start', 'run-1')
-    await quick.agentEnd()
-    await vi.advanceTimersByTimeAsync(2 * 60_000)
-    expect(quick.sent).toHaveLength(2)
-  })
-
-  it('cancels a pending check-in when the goal clears or the session shuts down', async () => {
-    vi.useFakeTimers()
-    const cleared = setup()
-    await cleared.goal('done')
-    cleared.subagent('start', 'run-1')
-    await cleared.agentEnd()
-    await cleared.goal('clear')
-    await vi.advanceTimersByTimeAsync(60 * 60_000)
-    expect(cleared.sent.map((s) => s.message.content)).toEqual([expect.stringContaining('Stop hook is now active'), 'Goal cleared: done'])
-
-    const closed = setup()
-    await closed.goal('done')
-    closed.subagent('start', 'run-1')
-    await closed.agentEnd()
-    await closed.shutdown()
-    await vi.advanceTimersByTimeAsync(60 * 60_000)
-    expect(closed.sent).toHaveLength(1)
   })
 })
 

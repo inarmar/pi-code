@@ -65,13 +65,6 @@
  * (asyncRewake keeps its own), and hooks still running when a headless run ends are
  * killed, as Claude does with -p; an interactive session leaves them to finish.
  *
- * SubagentStart runs through the pre-spawn seam (internal/subagent-hooks) so its
- * additionalContext reaches the child before its first prompt; it cannot block a
- * spawn, as Claude documents. SubagentStop rides the subagent extension's bus stop
- * event (notify-style: the child has already exited, so exit-2 block semantics
- * cannot be honored) and carries last_assistant_message. Inside a subagent child,
- * agent-frontmatter hooks arrive via PI_CODE_AGENT_HOOKS (Stop pre-converted to
- * SubagentStop, fired at the child's own agent end) and die with the process.
  *
  * Hook commands run through the platform shell (`sh -c`; on Windows Git Bash, or
  * PowerShell when Git Bash is absent, see internal/shell-resolve) with the event JSON
@@ -97,7 +90,6 @@
 
 import * as os from 'node:os'
 import { createLocalBashOperations, type ExtensionAPI, type ExtensionContext, SettingsManager, type ToolResultEvent, type UserBashEventResult } from '@earendil-works/pi-coding-agent'
-import { runningBackgroundAgents } from '../internal/background-agents.ts'
 import { claudeEffortLevel } from '../internal/effort.ts'
 import { INSTRUCTIONS_CHANNEL, isInstructionLoadEvent } from '../internal/instruction-events.ts'
 import { readManagedSettings } from '../internal/managed-settings.ts'
@@ -108,14 +100,12 @@ import { approvalRecheck, isProjectApproved } from '../internal/project-approval
 import { checkoutRoot } from '../internal/project-root.ts'
 import { watchSettingsFiles } from '../internal/settings-watch.ts'
 import { isSkillHooksEvent, SKILL_HOOKS_CHANNEL } from '../internal/skill-hooks.ts'
-import { isSubagentPhaseEvent, SUBAGENT_CHANNEL } from '../internal/subagent-events.ts'
-import { setSubagentStartHookRunner } from '../internal/subagent-hooks.ts'
 import { contentText, parseNumericEnv } from '../internal/values.ts'
 import { claudeToolInput, claudeToolName, claudeToolResponse, piToolOutput } from './claude-tools.ts'
-import { formatHooksSummary, type HookCommand, type HookMatcher, type HooksConfig, hookFiles, isBackgroundHook, loadHooks, loadManagedHooks, mergeAgentEnvHooks, mergeSkillHooks, readAllowedHttpHookUrls, readDisableAllHooks, readSettingsDisableAllHooks } from './config.ts'
+import { formatHooksSummary, type HookCommand, type HookMatcher, type HooksConfig, hookFiles, isBackgroundHook, loadHooks, loadManagedHooks, mergeSkillHooks, readAllowedHttpHookUrls, readDisableAllHooks, readSettingsDisableAllHooks } from './config.ts'
 import { blockedToolCall, type HookDecision, jsonBlockVerdict, postToolFeedback, promptContext, runPreToolUse, runUserPromptSubmit, surfaceSystemMessages, tryParseJson } from './decisions.ts'
 import { allCommands, matchingCommands, passesIfFilter } from './matcher.ts'
-import { type HookRunner, type HookRunResult, runAgentHook, runHookCommand, runHttpHook, runMcpToolHook, runPromptHook, sessionEndTimeoutMs, timeoutMs } from './runners.ts'
+import { type HookRunner, type HookRunResult, runHookCommand, runHttpHook, runMcpToolHook, runPromptHook, sessionEndTimeoutMs, timeoutMs } from './runners.ts'
 
 export * from './config.ts'
 export * from './decisions.ts'
@@ -269,24 +259,15 @@ export default function hooksExtension(pi: ExtensionAPI) {
     idlePromptTimer = undefined
   }
   let sessionCtx: ExtensionContext | undefined
-  /** Set inside a subagent child that carries agent-frontmatter hooks: the child's
-   * own agent end fires their SubagentStop, per Claude's Stop conversion. */
-  let agentIdentity: { agent: string; id?: string } | undefined
   /** Claude's allowManagedHooksOnly: only the managed hook set runs. */
   let managedHooksOnly = false
-  /** Skill hooks registered this session, re-applied when a settings edit reloads. */
+  /** Skill hooks active for the current agent run, including Stop continuations. */
   const registeredSkillHooks: Array<{ skillName: string; hooks: Record<string, unknown> }> = []
   /** Skill once-hooks spent this session, by origin and command. A settings reload rebuilds
    * the config and re-merges the skill hooks from their declarations, so the spent mark on
    * the parsed hook does not survive it; this does. */
   const spentOnce = new Set<string>()
   const onceKey = (hook: HookCommand): string => hook.declarationKey ?? `${hook.origin ?? ''}\0${hook.command ?? ''}`
-  /** Whether this process is a subagent's child. Claude runs settings hooks inside a
-   * subagent for tool events, but Stop is the main agent's, a subagent completes with
-   * SubagentStop, and a subagent run is neither a session (SessionStart, SessionEnd) nor
-   * a prompt the user submitted (UserPromptSubmit). The child is a full pi process loading
-   * the same settings, so without this every one of them fired in it. */
-  const inSubagentChild = (): boolean => process.env.PI_CODE_SUBAGENT === '1'
   /** Stops the settings watcher of the previous session. */
   let disposeSettingsWatch: () => void = () => {}
   /** Claude's disableAllHooks escape hatch was set somewhere in the honored chain. */
@@ -349,7 +330,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
   const dispatchHook = (ctx: ExtensionContext, hook: HookCommand, merged: Record<string, unknown>, ms: number, onChild?: (kill: () => void) => void): Promise<HookRunResult> => {
     if (hook.type === 'http') return runHttpHook(hook, merged, ms, allowedHttpHookUrls)
     if (hook.type === 'prompt') return runPromptHook(hook, merged, resolveHookModel(ctx, hook.model), ms, ctx.modelRegistry)
-    if (hook.type === 'agent') return runAgentHook(hook, merged, ms, (ctx.model as { id?: string } | undefined)?.id)
+    if (hook.type === 'agent') return Promise.resolve({ code: 1, stdout: '', stderr: 'Subagent hook type is not supported', timedOut: false })
     if (hook.type === 'mcp_tool') return runMcpToolHook(hook, merged, ms)
     return runHookCommand(hook.command, merged, ms, { projectDir, args: hook.args, onChild, shell: hook.shell, plugin: hook.pluginRoot !== undefined && hook.pluginDataDir !== undefined ? { root: hook.pluginRoot, dataDir: hook.pluginDataDir } : undefined, sessionId: merged.session_id as string | undefined })
   }
@@ -391,8 +372,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
       return Promise.resolve({ code: 0, stdout: '', stderr: '', timedOut: false })
     }
   // Hooks a skill's frontmatter declares arrive over the shared bus when the skill
-  // is invoked (see skills.ts) and stay registered for the rest of the session, as
-  // Claude documents; a session restart reloads config and drops them.
+  // is invoked (see skills.ts), and expire after the whole run settles.
   pi.events.on(SKILL_HOOKS_CHANNEL, (data) => {
     if (!isSkillHooksEvent(data)) return
     // Blocked under the escape hatch and under allowManagedHooksOnly, which
@@ -440,46 +420,6 @@ export default function hooksExtension(pi: ExtensionAPI) {
     fireInstructionsLoaded({ ...data })
   })
 
-  // Subagent lifecycle arrives over the bus without a pi context; the session context
-  // captured at session_start supplies the common payload fields.
-  pi.events.on(SUBAGENT_CHANNEL, async (data) => {
-    // SubagentStart runs through the pre-spawn seam below (so its context can
-    // reach the child before its first prompt); the bus start event would
-    // double-run it, so only the stop phase is handled here.
-    if (!isSubagentPhaseEvent(data) || data.phase !== 'stop' || !sessionCtx) return
-    const ctx = sessionCtx
-    // Claude's SubagentStop carries the subagent's final text; agent_transcript_path
-    // stays absent (a --no-session child writes no transcript, see docs/hooks.md).
-    const payload = { hook_event_name: 'SubagentStop', agent_type: data.agentType, agent_id: data.agentId, ...(data.lastAssistantMessage !== undefined ? { last_assistant_message: data.lastAssistantMessage } : {}) }
-    try {
-      const results = await runNotifyHooks(matchingCommands(config.SubagentStop, data.agentType), payload, boundRunner(ctx))
-      surfaceSystemMessages(results, (message) => ctx.ui.notify(message, 'warning'))
-      // The child has finished, so a continue false has nothing left to stop; its
-      // stopReason is still the message Claude shows the user.
-      for (const result of results) {
-        const parsed = tryParseJson(result.stdout)
-        if (parsed?.continue === false && parsed.stopReason) ctx.ui.notify(String(parsed.stopReason), 'warning')
-      }
-    } catch {
-      // The bus outlives the session: an event landing between /new disposing this
-      // ctx and the next session_start hits disposed getters, and nothing awaits a
-      // bus listener, so a throw here would escape as an unhandled rejection.
-    }
-  })
-
-  // Claude's SubagentStart hooks inject additionalContext into the subagent before
-  // its first prompt, so they must run before the spawn: the subagent extension
-  // calls this seam pre-spawn and prepends the returned context to the child's task.
-  setSubagentStartHookRunner(async (agentType, agentId) => {
-    if (!sessionCtx) return []
-    const ctx = sessionCtx
-    const commands = matchingCommands(config.SubagentStart, agentType)
-    if (commands.length === 0) return []
-    const results = await runNotifyHooks(commands, { hook_event_name: 'SubagentStart', agent_type: agentType, agent_id: agentId }, boundRunner(ctx))
-    surfaceSystemMessages(results, (message) => ctx.ui.notify(message, 'warning'))
-    return results.map((result) => promptContext(result.stdout)).filter(Boolean)
-  })
-
   /** Resolve the whole hook configuration from disk. Runs at session start and
    * again when the settings watcher sees an edit, so mid-session changes to
    * hooks, disableAllHooks, or allowedHttpHookUrls apply without a restart. */
@@ -511,10 +451,6 @@ export default function hooksExtension(pi: ExtensionAPI) {
    * settings files, a subagent child's agent hooks, and this session's skill hooks. */
   function mergeNonManagedHooks(files: string[]): void {
     for (const [eventName, matchers] of Object.entries(loadHooks(files, hookSources))) config[eventName] = [...(config[eventName] ?? []), ...matchers]
-    // Inside a subagent child, the parent passes the agent's frontmatter hooks via
-    // env (Stop already converted to SubagentStop, per Claude); they run only for
-    // this child process.
-    agentIdentity = mergeAgentEnvHooks(config, hookSources)
     // A reload must not drop the skill hooks the session already registered, nor revive
     // the once-hooks among them that already ran.
     for (const skill of registeredSkillHooks) mergeSkillHooks(config, skill.skillName, skill.hooks, hookSources)
@@ -522,6 +458,30 @@ export default function hooksExtension(pi: ExtensionAPI) {
       if (hook.once === true && spentOnce.has(onceKey(hook))) hook.spent = true
     }
   }
+
+  /** Pi's turn_end is per model turn. agent_settled is the first boundary
+   * after all tools, retries and agent_before_settle Stop continuations. */
+  const expireSkillHooks = (): void => {
+    if (registeredSkillHooks.length === 0) return
+    registeredSkillHooks.length = 0
+    spentOnce.clear()
+    for (const [name, matchers] of Object.entries(config)) {
+      const kept: HookMatcher[] = []
+      for (const matcher of matchers) {
+        const hooks = matcher.hooks.filter((hook) => !hook.origin?.startsWith('skill:'))
+        if (hooks.length === 0) {
+          hookSources.delete(matcher)
+        } else if (hooks.length === matcher.hooks.length) {
+          kept.push(matcher)
+        } else {
+          kept.push({ ...matcher, hooks })
+        }
+      }
+      if (kept.length === 0) delete config[name]
+      else config[name] = kept
+    }
+  }
+  pi.on('agent_settled', expireSkillHooks)
 
   pi.on('session_start', async (event, ctx) => {
     sessionCtx = ctx
@@ -553,7 +513,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
     pendingSessionContext = []
     // "reload" re-fires in-process with the same conversation and would double-run hooks;
     // a fork is a genuine session begin, which Claude reports as source "fork".
-    if (event.reason === 'reload' || inSubagentChild()) return
+    if (event.reason === 'reload') return
     const source = claudeSpelling(SESSION_START_SOURCE, event.reason)
     const commands = matchingCommands(config.SessionStart, source.names)
     const payload = { hook_event_name: 'SessionStart', source: source.value }
@@ -705,7 +665,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
   pi.on('input', async (event, ctx) => {
     // Only genuine user input; extension-injected messages (plan-mode, subagent) are not
     // prompts the user submitted.
-    if (event.source === 'extension' || inSubagentChild()) return { action: 'continue' }
+    if (event.source === 'extension') return { action: 'continue' }
     // The user typed, so the pending idle_prompt no longer applies.
     cancelIdlePrompt()
     // Genuine user input is progress, so it breaks a Stop-hook continuation streak: the
@@ -737,33 +697,17 @@ export default function hooksExtension(pi: ExtensionAPI) {
    * turn cancels it. Observational only; exit codes and JSON output are ignored. */
   const armIdlePrompt = (ctx: ExtensionContext): void => {
     cancelIdlePrompt()
-    if (inSubagentChild()) return
     const notifyCommands = matchingCommands(config.Notification, ['idle_prompt'])
     if (notifyCommands.length > 0) {
       const runner = boundRunner(ctx)
       idlePromptTimer = setTimeout(() => {
         // Claude also holds it while a background agent still runs; that run's completion
         // starts a new turn, whose end arms the notification again.
-        if (runningBackgroundAgents() > 0) return
         void runNotifyHooks(notifyCommands, { hook_event_name: 'Notification', notification_type: 'idle_prompt', message: 'pi is waiting for your input' }, runner).catch(() => {})
       }, IDLE_PROMPT_DELAY_MS)
       idlePromptTimer.unref?.()
     }
   }
-  /** In a subagent child, the agent-frontmatter Stop hooks were converted to SubagentStop
-   * and fire at the child's own end, notify-style, before the Stop early-returns, which do
-   * not apply to them. Only the agent's own frontmatter hooks (stamped agent:<name>): the
-   * settings-level SubagentStop is fired by the parent when the child completes, so the
-   * child firing it too ran it twice. */
-  const fireChildSubagentStop = async (event: { messages?: Array<{ role: string; content?: unknown }> }, ctx: ExtensionContext): Promise<void> => {
-    if (!agentIdentity) return
-    const subStop = matchingCommands(config.SubagentStop, agentIdentity.agent).filter((command) => command.origin?.startsWith('agent:'))
-    if (subStop.length === 0) return
-    const subText = lastAssistantText(event.messages ?? [])
-    const subPayload = { hook_event_name: 'SubagentStop', agent_type: agentIdentity.agent, ...(agentIdentity.id ? { agent_id: agentIdentity.id } : {}), stop_hook_active: false, ...(subText ? { last_assistant_message: subText } : {}) }
-    await runNotifyHooks(subStop, subPayload, boundRunner(ctx)).catch(() => {})
-  }
-
   /** Limit consecutive Stop blocks without user input. The boundary handler adds
    * the feedback and requests continuation only when this returns true. */
   const allowStopContinuation = (ctx: ExtensionContext): boolean => {
@@ -780,15 +724,14 @@ export default function hooksExtension(pi: ExtensionAPI) {
     return true
   }
 
-  pi.on('agent_end', async (event, ctx) => {
-    armIdlePrompt(ctx)
-    await fireChildSubagentStop(event, ctx)
-  })
+
+
+  pi.on('agent_end', (_event, ctx) => armIdlePrompt(ctx))
 
   pi.on('agent_before_settle', async (event, ctx) => {
     // Child agent-frontmatter Stop hooks run at agent_end; failed or aborted
     // runs must not trigger a main-agent Claude Stop.
-    if (inSubagentChild() || event.outcome !== 'completed') {
+    if (event.outcome !== 'completed') {
       stopHookActive = false
       stopHookBlockCount = 0
       return
@@ -897,7 +840,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
     const reason = claudeSpelling(SESSION_END_REASON, event.reason)
     // SessionEnd rides Claude's short shared budget (see sessionEndTimeoutMs) so a
     // slow hook cannot stall session exit, /new or /resume.
-    const sessionEndCommands = inSubagentChild() ? [] : matchingCommands(config.SessionEnd, reason.names).filter((command) => passesIfFilter(command, undefined))
+    const sessionEndCommands = matchingCommands(config.SessionEnd, reason.names).filter((command) => passesIfFilter(command, undefined))
     const runner = boundRunner(ctx)
     const results = await Promise.all(sessionEndCommands.map((command) => runner(command, { hook_event_name: 'SessionEnd', reason: reason.value }, sessionEndTimeoutMs(command))))
     surfaceSystemMessages(results, (message) => ctx.ui.notify(message, 'warning'))

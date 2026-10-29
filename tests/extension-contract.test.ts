@@ -51,17 +51,6 @@ describe('cross-extension seams meet across module graphs', () => {
     return [first, (await import(file)) as T]
   }
 
-  it('an agent hook reaches the runner the subagent extension registered', async () => {
-    type Seam = typeof import('../extensions/internal/agent-run.ts')
-    const [registrar, consumer] = await twoGraphs<Seam>('../extensions/internal/agent-run.ts')
-    registrar.setAgentRunner(async (request) => `ran: ${request.prompt}`)
-    try {
-      await expect(consumer.runAgent({ prompt: 'verify' })).resolves.toBe('ran: verify')
-    } finally {
-      registrar.setAgentRunner(undefined)
-    }
-  })
-
   it('an mcp_tool hook reaches the caller the mcp extension registered', async () => {
     type Seam = typeof import('../extensions/internal/mcp-call.ts')
     const [registrar, consumer] = await twoGraphs<Seam>('../extensions/internal/mcp-call.ts')
@@ -96,45 +85,9 @@ describe('cross-extension seams meet across module graphs', () => {
     }
   })
 
-  it('a subagent spawn reaches the SubagentStart runner the hooks extension registered', async () => {
-    type Seam = typeof import('../extensions/internal/subagent-hooks.ts')
-    const [registrar, consumer] = await twoGraphs<Seam>('../extensions/internal/subagent-hooks.ts')
-    registrar.setSubagentStartHookRunner(async (agentType) => [`context for ${agentType}`])
-    try {
-      await expect(consumer.runSubagentStartHooks('explore', 'id-1')).resolves.toEqual(['context for explore'])
-    } finally {
-      registrar.setSubagentStartHookRunner(undefined)
-    }
-  })
-
-  it('the idle_prompt gate reads the background run count the subagent extension registered', async () => {
-    type Seam = typeof import('../extensions/internal/background-agents.ts')
-    const [registrar, consumer] = await twoGraphs<Seam>('../extensions/internal/background-agents.ts')
-    registrar.setBackgroundAgentCounter(() => 3)
-    try {
-      expect(consumer.runningBackgroundAgents()).toBe(3)
-    } finally {
-      registrar.setBackgroundAgentCounter(undefined)
-    }
-  })
-
-  it('a background result reaches the session instance another module graph attached', async () => {
-    type Seam = typeof import('../extensions/internal/session-mailbox.ts')
-    const [launcher, current] = await twoGraphs<Seam>('../extensions/internal/session-mailbox.ts')
-    const received: string[] = []
-    const pi = { sendMessage: (message: { content: string }) => received.push(message.content) } as never
-    const mailbox = current.sessionMailbox('contract-test')
-    mailbox.attach(pi, true)
-    try {
-      launcher.sessionMailbox('contract-test').deliver((target) => target.sendMessage({ customType: 't', content: 'done', display: true }))
-      expect(received).toEqual(['done'])
-    } finally {
-      mailbox.detach(pi)
-    }
-  })
 })
 
-// The settings watchers in hooks, status-line and env-settings outlive the handler that
+// The settings watchers in hooks and env-settings outlive the handler that
 // arms them, so their cleanup rests on what pi does on /new, /resume, /fork and /reload
 // (pi dist/core/agent-session-runtime teardownCurrent, then the host's createRuntime).
 // Pinned against the real runtime: a pi upgrade that changes any of it has to fail here,

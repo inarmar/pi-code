@@ -15,11 +15,6 @@
  * - The Stop hooks' consecutive-block cap (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP, default 8)
  *   bounds a stalled loop: that many not-met verdicts in a row on turns that used no tool
  *   pause the loop with a warning, goal still set, until the next user prompt.
- * - Evaluation is skipped while a subagent is still running (tracked from the subagent
- *   extension's bus events; pi has no other background work). A check-in turn is
- *   injected once the wait reaches CLAUDE_CODE_GOAL_CHECKIN_MINUTES (30, doubling up to
- *   four times the first interval, at most three idle check-ins between user prompts;
- *   0 turns check-ins off).
  * - A turn ended by the user (Esc) or by an error is not evaluated, and an Esc during
  *   the evaluation cancels it with the goal left set. An unrecoverable
  *   error (authentication, credits, context overflow, model unavailable) clears the goal
@@ -39,8 +34,6 @@ import * as os from 'node:os'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { hookFiles, readSettingsDisableAllHooks, stopHookBlockCap } from './hooks/index.ts'
 import {
-  checkinIntervalMs,
-  checkinText,
   classifyUnrecoverable,
   EVALUATOR_SYSTEM,
   evaluatorPrompt,
@@ -53,10 +46,8 @@ import {
   type GoalVerdict,
   isClearAlias,
   kickoffPrompt,
-  MAX_IDLE_CHECKINS,
   NO_GOAL_TEXT,
   parseVerdict,
-  type RunningWork,
   renderTranscript,
   summaryText,
 } from './internal/goal-evaluator.ts'
@@ -64,7 +55,6 @@ import { readManagedSettings } from './internal/managed-settings.ts'
 import { completeText } from './internal/model-complete.ts'
 import { resolveModelOverride } from './internal/model-lookup.ts'
 import { isProjectApprovedSilently } from './internal/project-approval.ts'
-import { isSubagentPhaseEvent, SUBAGENT_CHANNEL } from './internal/subagent-events.ts'
 import { errorMessage } from './internal/values.ts'
 
 /** Session entry type the goal state persists under, and the custom message type its
@@ -201,14 +191,6 @@ export default function goalExtension(pi: ExtensionAPI) {
   let noProgressStreak = 0
   /** The error the last run ended on, judged once the run settles (past pi's retries). */
   let lastTurnError: string | undefined
-  /** Subagents still running, by id, from the subagent extension's bus events. */
-  const running = new Map<string, string>()
-  let deferredSince: number | undefined
-  let checkinsDelivered = 0
-  let idleCheckins = 0
-  /** A check-in came due while a turn was running: deliver it at the next turn end. */
-  let checkinDue = false
-  let checkinTimer: ReturnType<typeof setTimeout> | undefined
   let indicatorTimer: ReturnType<typeof setInterval> | undefined
 
   /** A goal line in the transcript, which the model also reads. A timer can outlive the
@@ -251,25 +233,11 @@ export default function goalExtension(pi: ExtensionAPI) {
     ctx.ui.setStatus('goal', undefined)
   }
 
-  function stopCheckin(): void {
-    clearTimeout(checkinTimer)
-    checkinTimer = undefined
-  }
-
-  function endDeferral(): void {
-    deferredSince = undefined
-    checkinDue = false
-    stopCheckin()
-  }
-
   /** Make `condition` the active goal with fresh counters; the entry is the caller's. */
   function activate(ctx: ExtensionContext, condition: string): void {
     goal = { condition, setAt: Date.now(), iterations: 0, tokensAtStart: sessionTokens(ctx), evaluatorTokens: 0 }
     generation += 1
     noProgressStreak = 0
-    checkinsDelivered = 0
-    idleCheckins = 0
-    endDeferral()
     showIndicator(ctx)
   }
 
@@ -279,7 +247,6 @@ export default function goalExtension(pi: ExtensionAPI) {
     if (!ended) return undefined
     goal = undefined
     generation += 1
-    endDeferral()
     stopIndicator(ctx)
     pi.appendEntry(GOAL_ENTRY, { state, condition: ended.condition } satisfies GoalEntry)
     return ended.condition
@@ -356,45 +323,6 @@ export default function goalExtension(pi: ExtensionAPI) {
     else continueGoal(ctx, active, verdict.reason)
   }
 
-  function deliverCheckin(paused: boolean): void {
-    if (!goal) return
-    checkinDue = false
-    checkinsDelivered += 1
-    const work: RunningWork[] = [...running].map(([id, agentType]) => ({ id, agentType }))
-    send(checkinText(goal.condition, Date.now() - (deferredSince ?? Date.now()), work, paused), { triggerTurn: true })
-  }
-
-  function onCheckinDue(): void {
-    checkinTimer = undefined
-    if (!goal || !sessionCtx) return
-    // Claude delivers a due check-in at the next turn end when a turn is running, and
-    // only starts idle turns for it up to the per-prompt cap.
-    if (!sessionCtx.isIdle() || idleCheckins >= MAX_IDLE_CHECKINS) {
-      checkinDue = true
-      return
-    }
-    idleCheckins += 1
-    deliverCheckin(idleCheckins >= MAX_IDLE_CHECKINS)
-  }
-
-  function armCheckin(): void {
-    if (checkinTimer) return
-    const ms = checkinIntervalMs(process.env, checkinsDelivered)
-    if (ms <= 0) return
-    checkinTimer = setTimeout(onCheckinDue, ms)
-    checkinTimer.unref?.()
-  }
-
-  /** Background work keeps the goal waiting: no verdict this turn, a check-in later. */
-  function deferEvaluation(): void {
-    deferredSince ??= Date.now()
-    if (checkinDue) {
-      deliverCheckin(false)
-      return
-    }
-    armCheckin()
-  }
-
   function statusText(ctx: SessionReader): string {
     const summary = currentSummary(ctx)
     if (summary) return formatActiveGoal(summary)
@@ -443,12 +371,6 @@ export default function goalExtension(pi: ExtensionAPI) {
     },
   })
 
-  pi.events.on(SUBAGENT_CHANNEL, (data) => {
-    if (!isSubagentPhaseEvent(data)) return
-    if (data.phase === 'start') running.set(data.agentId, data.agentType)
-    else running.delete(data.agentId)
-  })
-
   pi.on('session_start', (_event, ctx) => {
     // pi's CLI builds a fresh extension instance per session replacement; RPC mode can reuse
     // one across sessions, so drop the previous session's goal and
@@ -460,9 +382,6 @@ export default function goalExtension(pi: ExtensionAPI) {
     turnUsedTools = false
     noProgressStreak = 0
     lastTurnError = undefined
-    checkinsDelivered = 0
-    idleCheckins = 0
-    endDeferral()
     stopIndicator(ctx)
     const entry = lastGoalEntry(ctx)
     if (entry?.state !== 'active') return
@@ -472,7 +391,6 @@ export default function goalExtension(pi: ExtensionAPI) {
   })
 
   pi.on('session_shutdown', () => {
-    stopCheckin()
     clearInterval(indicatorTimer)
     indicatorTimer = undefined
   })
@@ -491,7 +409,6 @@ export default function goalExtension(pi: ExtensionAPI) {
     // check-in allowance on the user's next prompt.
     if (event.source === 'extension') return
     noProgressStreak = 0
-    idleCheckins = 0
   })
 
   // On agent_end rather than agent_settled, for the reason hooks.ts gives: a peer
@@ -505,11 +422,6 @@ export default function goalExtension(pi: ExtensionAPI) {
     // Claude runs no Stop evaluation after a user interrupt; a failed turn is judged once
     // the run settles, so neither is evaluated here and the goal stays set.
     if (!goal || last?.stopReason === 'aborted' || lastTurnError !== undefined) return
-    if (running.size > 0) {
-      deferEvaluation()
-      return
-    }
-    endDeferral()
     await evaluate(ctx)
   })
 

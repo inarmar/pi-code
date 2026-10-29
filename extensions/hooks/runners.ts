@@ -1,13 +1,12 @@
 /**
  * The hook runners: one per hook type (shell command incl. exec-form, http POST,
- * in-process prompt, mcp_tool call, agent subagent), plus the timeout budget and
+ * in-process prompt and mcp_tool call), plus the timeout budget and
  * the process-group kill used by the shell runner.
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import type { Api, Model } from '@earendil-works/pi-ai'
-import { runAgent } from '../internal/agent-run.ts'
 import { callMcpTool } from '../internal/mcp-call.ts'
 import { type CompletionRegistry, completeText } from '../internal/model-complete.ts'
 import { killProcessTree } from '../internal/process-tree.ts'
@@ -291,13 +290,13 @@ const PROMPT_HOOK_SYSTEM = [
  */
 /** Replace `$ARGUMENTS` with the event JSON via a replacer function, so `$`-sequences
  * in the payload (`$$`, `$&`, `` $` ``, `$'`) are inserted literally, not read as
- * `String.replace` patterns. Prompt and agent hooks feed the result to the model. */
+ * `String.replace` patterns. Prompt hooks feed the result to the model. */
 function substituteArguments(prompt: string | undefined, payload: unknown): string {
   const json = JSON.stringify(payload)
   return (prompt ?? '').replaceAll('$ARGUMENTS', () => json)
 }
 
-/** Classify a model/agent failure: the deadline is authoritative via the signal (the
+/** Classify a prompt-model failure: the deadline is authoritative via the signal (the
  * subagent runner rejects with a plain Error on abort, so an error-name check alone
  * fails open), so a fired signal is a timeout (PreToolUse fails closed); anything else
  * produced no verdict and is non-blocking. */
@@ -377,23 +376,5 @@ export async function runMcpToolHook(hook: HookCommand, payload: unknown, timeou
     // Left running, the deadline timer pins the event loop for the full timeout
     // after the call resolves, delaying exit in a one-shot headless run.
     clearTimeout(timer)
-  }
-}
-
-/**
- * Claude's experimental `type: "agent"` hook: spawn a subagent (Read/Grep/Glob) to
- * verify a condition, then return its final text as a JSON decision, parsed by the
- * same interpreter as a command hook. pi reaches the subagent through the agent-run
- * seam the subagent extension registers. Like the prompt hook, only an abort at the
- * deadline fails closed; a missing runner or a crashed agent is non-blocking.
- */
-export async function runAgentHook(hook: HookCommand, payload: unknown, timeoutMs: number, sessionModelId: string | undefined): Promise<HookRunResult> {
-  const prompt = substituteArguments(hook.prompt, payload)
-  const signal = AbortSignal.timeout(timeoutMs)
-  try {
-    const answer = await runAgent({ prompt, model: hook.model ?? sessionModelId, systemPrompt: hook.systemPrompt, signal })
-    return { code: 0, stdout: answer, stderr: '', timedOut: false }
-  } catch (error) {
-    return abortAwareFailure(signal, error)
   }
 }

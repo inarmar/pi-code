@@ -1,7 +1,7 @@
 {
   "name": "pi-code",
   "version": "1.6.1",
-  "description": "Claude Code compatibility for pi: commands, skills, hooks, rules, subagents, tasks, goals and planning",
+  "description": "Claude Code compatibility for pi: commands, skills, hooks, rules, goals and planning",
   "keywords": [
     "pi",
     "pi-package",
@@ -14,7 +14,6 @@
     "ai",
     "hooks",
     "skills",
-    "subagents",
     "todo"
   ],
   "license": "MIT",

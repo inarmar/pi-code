@@ -26,14 +26,12 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { expandCommand, shellExecutionDisabled } from './commands.ts'
-import { runAgent } from './internal/agent-run.ts'
 import { parseCommandFile } from './internal/command-file.ts'
 import { claudeConfigDir } from './internal/config-dir.ts'
 import { parseClaudeFrontmatter } from './internal/frontmatter.ts'
 import { managedSettingsFile } from './internal/managed-settings.ts'
 import { isProjectApprovedSilently } from './internal/project-approval.ts'
 import { ancestorDirs } from './internal/project-root.ts'
-import { sessionHasTurns, sessionMailbox } from './internal/session-mailbox.ts'
 import { claudeSettingsChain, readSettingsChain } from './internal/settings-chain.ts'
 import { SKILL_HOOKS_CHANNEL } from './internal/skill-hooks.ts'
 import { errorMessage, isDirectory, isRecord } from './internal/values.ts'
@@ -110,10 +108,6 @@ function findClaudeSkill(name: string, roots: string[]): FoundSkill | undefined 
 }
 
 export default function skillsExtension(pi: ExtensionAPI) {
-  pi.on('session_start', (_event, ctx) => forkResults.attach(pi, sessionHasTurns(ctx)))
-  pi.on('agent_start', () => forkResults.markPrompted(pi))
-  pi.on('session_shutdown', () => forkResults.detach(pi))
-
   pi.on('resources_discover', (_event, ctx) => {
     // resources_discover fires after session_start, so the approval is already
     // resolved; reading it silently keeps a second trust dialog off the screen.
@@ -147,49 +141,6 @@ function refusedByOverride(name: string, ctx: ExtensionContext, trusted: boolean
   if (skillOverrideFor(name, ctx.cwd, trusted) !== 'off') return undefined
   if (ctx.hasUI) ctx.ui.notify(`Skill "${name}" is turned off by skillOverrides in settings.`, 'info')
   return { action: 'handled' }
-}
-
-/** Forked skills still running in the background, by name. */
-const runningForks = new Set<string>()
-
-/** Whether a context: fork skill holds the invoking turn for its result. Claude: "The
- * forked subagent runs in the background: you keep working while it runs, and its result
- * arrives in your conversation when it completes. Set background: false in the frontmatter
- * to instead wait for the result in the turn that invoked the skill." It also waits in
- * non-interactive mode, when CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is 1, and "when you
- * invoke a forked skill while an earlier invocation of the same skill is still running". */
-function forkWaits(name: string, frontmatter: Record<string, unknown>, ctx: ExtensionContext): boolean {
-  if (String(frontmatter.background).trim().toLowerCase() === 'false') return true
-  return !ctx.hasUI || process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS === '1' || runningForks.has(name)
-}
-
-/** Where a forked skill's result goes: the session current when it completes, which after
- * a /new, /resume, /fork or /reload is not the one whose pi started it. */
-const forkResults = sessionMailbox('skill-fork-results')
-
-/** Start a forked skill in the background and hand its result to the conversation when it
- * completes. The promise has no awaiter, so the catch keeps a delivery that throws from
- * surfacing as an unhandled rejection, which exits pi. */
-function startForkedSkill(ctx: ExtensionContext, fork: { name: string; filePath: string; expanded: string; agentName: string | undefined }): { action: 'handled' } {
-  runningForks.add(fork.name)
-  ctx.ui.notify(`Skill ${fork.name} is running in a forked subagent in the background; its result arrives here when it completes.`, 'info')
-  void runForkedSkill(fork.name, fork.filePath, fork.expanded, fork.agentName)
-    .then((result) => forkResults.deliver((current, startsTurn) => current.sendMessage({ customType: 'skill-fork', content: result.text, display: true }, { triggerTurn: startsTurn })))
-    .catch(() => {})
-    .finally(() => runningForks.delete(fork.name))
-  return { action: 'handled' }
-}
-
-/** Claude's context: fork run: the expanded skill content becomes the prompt that
- * drives a subagent, without the conversation history. Never rejects: a failed run
- * is reported in the returned block. */
-async function runForkedSkill(name: string, filePath: string, expanded: string, agentName: string | undefined): Promise<{ action: 'transform'; text: string }> {
-  try {
-    const output = await runAgent({ prompt: expanded, fullTools: true, ...(agentName ? { agent: agentName } : {}) })
-    return { action: 'transform', text: `<skill name="${name}" location="${filePath}">\nThe skill ran in a forked subagent (no conversation history shared). Its result:\n\n${output}\n</skill>` }
-  } catch (error) {
-    return { action: 'transform', text: `<skill name="${name}">\nThe forked subagent run failed: ${errorMessage(error)}\n</skill>` }
-  }
 }
 
 /** A `/skill:name args` invocation into its expanded skill block, or undefined to
@@ -273,6 +224,10 @@ async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: Ext
   // invoked, for the rest of the session; the hooks extension owns running them,
   // so the declaration is announced over the shared bus.
   const frontmatter = parseClaudeFrontmatter<Record<string, unknown>>(content).frontmatter
+  if (String(frontmatter.context ?? '').trim().toLowerCase() === 'fork') {
+    ctx.ui.notify(`Skill ${name} requires context: fork, which is unavailable without subagents.`, 'warning')
+    return { action: 'handled' }
+  }
   publishSkillHooks(pi, name, frontmatter)
   let expanded: string
   try {
@@ -283,11 +238,6 @@ async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: Ext
     // unexpanded. The notify carries the failure message.
     ctx.ui.notify(errorMessage(error), 'error')
     return { action: 'handled' }
-  }
-  if (typeof frontmatter.context === 'string' && frontmatter.context.trim().toLowerCase() === 'fork') {
-    const agentName = typeof frontmatter.agent === 'string' ? frontmatter.agent.trim() : undefined
-    if (forkWaits(name, frontmatter, ctx)) return runForkedSkill(name, found.filePath, expanded, agentName)
-    return startForkedSkill(ctx, { name, filePath: found.filePath, expanded, agentName })
   }
   return { action: 'transform', text: `<skill name="${name}" location="${found.filePath}">\nReferences are relative to ${found.baseDir}.\n\n${expanded}\n</skill>` }
 }

@@ -19,7 +19,6 @@ import {
   readAllowedHttpHookUrls,
   readDisableAllHooks,
   resetMatcherCache,
-  runAgentHook,
   runHookCommand,
   runHttpHook,
   runMcpToolHook,
@@ -27,7 +26,6 @@ import {
   runPromptHook,
   stopHookBlockCap,
 } from '../extensions/hooks/index.ts'
-import { setAgentRunner } from '../extensions/internal/agent-run.ts'
 import { setMcpToolCaller } from '../extensions/internal/mcp-call.ts'
 import { setCompleteBackend } from '../extensions/internal/model-complete.ts'
 
@@ -257,72 +255,6 @@ describe('runMcpToolHook', () => {
     expect(noCaller.code).not.toBe(0)
     const noFields = await runMcpToolHook({ type: 'mcp_tool', command: '' }, {}, 5000)
     expect(noFields.code).not.toBe(0)
-  })
-})
-
-describe('runAgentHook', () => {
-  afterEach(() => setAgentRunner(undefined))
-
-  it('substitutes $ARGUMENTS, passes model/systemPrompt, and returns the decision as stdout', async () => {
-    let seen: unknown
-    setAgentRunner(async (req) => {
-      seen = req
-      return '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"reads /etc"}}'
-    })
-    const result = await runAgentHook({ type: 'agent', command: '', prompt: 'Inspect $ARGUMENTS', model: 'fast-1', systemPrompt: 'be strict' }, { hook_event_name: 'PreToolUse', tool_name: 'bash' }, 60_000, undefined)
-    expect(result).toMatchObject({ code: 0, timedOut: false })
-    expect(interpretHookResult(result.code, result.stdout, result.stderr)).toEqual({ block: true, reason: 'reads /etc' })
-    expect(seen).toMatchObject({ model: 'fast-1', systemPrompt: 'be strict' })
-    expect((seen as { prompt: string }).prompt).toContain('"tool_name":"bash"')
-    expect((seen as { prompt: string }).prompt).toContain('Inspect ')
-  })
-
-  it('falls back to the session model id when the hook names none', async () => {
-    let seenModel: unknown
-    setAgentRunner(async (req) => {
-      seenModel = req.model
-      return ''
-    })
-    await runAgentHook({ type: 'agent', command: '', prompt: 'x' }, {}, 60_000, 'session-model')
-    expect(seenModel).toBe('session-model')
-  })
-
-  it('is non-blocking when no runner is registered or the run errors', async () => {
-    const noRunner = await runAgentHook({ type: 'agent', command: '', prompt: 'x' }, {}, 60_000, undefined)
-    expect(noRunner.timedOut).toBe(false)
-    expect(noRunner.code).not.toBe(0)
-    expect(noRunner.code).not.toBe(2)
-
-    setAgentRunner(async () => {
-      throw new Error('subagent crashed')
-    })
-    const errored = await runAgentHook({ type: 'agent', command: '', prompt: 'x' }, {}, 60_000, undefined)
-    expect(errored.timedOut).toBe(false)
-    expect(errored.code).not.toBe(0)
-  })
-
-  it('substitutes $ARGUMENTS literally, not interpreting $-sequences in the payload', async () => {
-    let seenPrompt = ''
-    setAgentRunner(async (req) => {
-      seenPrompt = req.prompt
-      return '{}'
-    })
-    await runAgentHook({ type: 'agent', command: '', prompt: 'Inspect $ARGUMENTS' }, { tool_input: { command: 'echo $$' } }, 60_000, undefined)
-    expect(seenPrompt).toContain('echo $$')
-  })
-
-  it('reports a timeout so PreToolUse fails closed even when the runner throws a plain abort error', async () => {
-    // The real subagent runner rejects with a generic Error('Subagent was aborted')
-    // on abort, whose name is not AbortError, so the deadline must be detected via the
-    // signal, not the error name, or a hung PreToolUse agent hook fails open.
-    setAgentRunner(
-      (req) =>
-        new Promise((_resolve, reject) => {
-          req.signal?.addEventListener('abort', () => reject(new Error('Subagent was aborted')))
-        }),
-    )
-    const result = await runAgentHook({ type: 'agent', command: '', prompt: 'x' }, {}, 20, undefined)
-    expect(result.timedOut).toBe(true)
   })
 })
 
