@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   formatHooksSummary,
@@ -159,9 +159,18 @@ describe('lastAssistantText', () => {
 })
 
 describe('hookFiles', () => {
+  beforeEach(() => vi.stubEnv('PI_CODING_AGENT_DIR', ''))
+
   it('always includes user settings and adds project settings only when trusted', () => {
-    expect(hookFiles('/proj', '/home', false)).toEqual([join('/home', '.claude', 'settings.json')])
-    expect(hookFiles('/proj', '/home', true)).toEqual([join('/home', '.claude', 'settings.json'), join('/proj', '.claude', 'settings.json'), join('/proj', '.claude', 'settings.local.json')])
+    const user = [join('/home', '.claude', 'settings.json'), resolve('/home', '.pi', 'agent', 'settings.json'), join('/home', '.agents', 'settings.json')]
+    expect(hookFiles('/proj', '/home', false)).toEqual(user)
+    expect(hookFiles('/proj', '/home', true)).toEqual([...user, ...['.claude', '.pi', '.agents'].flatMap((dir) => [join('/proj', dir, 'settings.json'), join('/proj', dir, 'settings.local.json')])])
+  })
+
+  it('honors the native Pi agent directory override', () => {
+    vi.stubEnv('PI_CODING_AGENT_DIR', '/custom/pi-agent')
+    expect(hookFiles('/proj', '/home', false)).toContain(resolve('/custom/pi-agent', 'settings.json'))
+    expect(hookFiles('/proj', '/home', false)).not.toContain(resolve('/home', '.pi', 'agent', 'settings.json'))
   })
 
   it('reads settings.json from the primary working directory and settings.local.json from the repository root', () => {
@@ -180,7 +189,11 @@ describe('hookFiles', () => {
       process.platform === 'win32'
         ? [join('/home', '.claude', 'settings.json'), join(sub, '.claude', 'settings.json'), join(sub, '.claude', 'settings.local.json')]
         : [join('/home', '.claude', 'settings.json'), join(sub, '.claude', 'settings.json'), join(sub, '.claude', 'settings.local.json'), join(repo, '.claude', 'settings.local.json')]
-    expect(hookFiles(sub, '/home', true)).toEqual(expected)
+    expect(hookFiles(sub, '/home', true).filter((file) => file.includes(`${sep}.claude${sep}`))).toEqual(expected)
+    for (const dir of ['.pi', '.agents']) {
+      expect(hookFiles(sub, '/home', true)).toContain(join(sub, dir, 'settings.local.json'))
+      expect(hookFiles(sub, '/home', true)).not.toContain(join(repo, dir, 'settings.local.json'))
+    }
   })
 })
 

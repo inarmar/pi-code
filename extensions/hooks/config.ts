@@ -5,8 +5,10 @@
  */
 
 import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { readManagedSettings } from '../internal/managed-settings.ts'
-import { claudeSettingsChain, readSettingsChain } from '../internal/settings-chain.ts'
+import { claudeSettingsSources, readSettingsChain } from '../internal/settings-chain.ts'
 import { errorMessage, escapeRegExp, isRecord } from '../internal/values.ts'
 
 export interface HookCommand {
@@ -69,11 +71,20 @@ export function isBackgroundHook(hook: HookCommand): boolean {
 }
 export type HooksConfig = Record<string, HookMatcher[]>
 
-/** Settings files to read, newest-winning, through the shared settings chain: project
- * files load only when trusted, the shared settings.json from cwd and settings.local.json
- * from the repository root, as Claude places them. */
+/** User sources precede trusted project sources. Claude keeps its own placement rules;
+ * Pi and .agents project settings stay beside the working directory. */
 export function hookFiles(cwd: string, home: string, trusted: boolean): string[] {
-  return claudeSettingsChain(cwd, home, trusted)
+  const claude = claudeSettingsSources(cwd, home, trusted)
+  const agentDir = process.env.PI_CODING_AGENT_DIR ? getAgentDir() : path.join(home, '.pi', 'agent')
+  return [
+    ...new Set([
+      ...claude.filter((source) => source.scope === 'user').map((source) => source.file),
+      path.resolve(agentDir, 'settings.json'),
+      path.join(home, '.agents', 'settings.json'),
+      ...claude.filter((source) => source.scope !== 'user').map((source) => source.file),
+      ...(trusted ? ['.pi', '.agents'].flatMap((dir) => [path.join(cwd, dir, 'settings.json'), path.join(cwd, dir, 'settings.local.json')]) : []),
+    ]),
+  ]
 }
 
 /** Claude's `disableAllHooks` setting: the escape hatch a user reaches for when a

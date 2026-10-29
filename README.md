@@ -5,7 +5,7 @@ Claude Code **skills** and **hooks** compatibility for [Pi](https://pi.dev).
 This fork intentionally includes two Pi extensions:
 
 - `extensions/skills.ts` discovers Claude-format skills under `.claude/skills`, expands arguments, `@file` references and optional shell spans, and activates skill hooks **only on explicit `/skill:name` input**. Hooks can also come from any skill Pi has loaded, including Pi packages and additional skill paths.
-- `extensions/hooks/index.ts` executes Claude Code lifecycle hooks from `.claude/settings.json`, `.claude/settings.local.json`, user settings, managed settings and explicitly invoked skill frontmatter. It handles blocking, feedback, timeouts and Stop continuation through `agent_before_settle`.
+- `extensions/hooks/index.ts` executes Claude Code lifecycle hooks from `.claude`, `.pi` and `.agents` settings, managed settings and explicitly invoked skill frontmatter. It handles blocking, feedback, timeouts and Stop continuation through `agent_before_settle`.
 
 **Skill hooks expire at `agent_settled`**, after all Stop continuations in the current agent run. Ordinary settings hooks remain configured across runs.
 

@@ -1,6 +1,13 @@
 # Claude Code hooks
 
-The Hooks extension translates Claude Code hook declarations from user, managed and **Pi-trusted** project `.claude/settings.json` (including local overrides), and from `hooks` frontmatter in explicitly invoked Pi skills.
+The Hooks extension translates Claude Code hook declarations from user, managed and **Pi-trusted** project settings, and from `hooks` frontmatter in explicitly invoked Pi skills.
+
+Settings sources, in merge order:
+
+- User: `~/.claude/settings.json` (or `CLAUDE_CONFIG_DIR`), `~/.pi/agent/settings.json` (or `PI_CODING_AGENT_DIR/settings.json`), `~/.agents/settings.json`.
+- Trusted project: existing `.claude/settings.json` and `.claude/settings.local.json` locations, then `<cwd>/.pi/settings.json`, `<cwd>/.pi/settings.local.json`, `<cwd>/.agents/settings.json`, `<cwd>/.agents/settings.local.json`.
+
+All sources use the same `{"hooks": {"PreToolUse": [...]}}` JSON format. Hooks merge additively; identical handlers are deduplicated. Project files are excluded until Pi trusts the project, including during live reload. `disableAllHooks`, HTTP allowlists and managed-only policy apply to the new sources too. Files created or edited during a session are picked up automatically. Claude retains its existing local-settings placement rules; `.pi` and `.agents` project settings stay in the current working directory, including in worktrees. Only hook-related settings are read from the additional sources; other Pi settings are left to Pi.
 
 Hook types: shell command, HTTP POST and model-evaluated prompt. Unsupported `mcp_tool` and `agent` hook entries are ignored. This package does **not** connect MCP servers or launch subagents.
 

@@ -2840,6 +2840,80 @@ describe('allowManagedHooksOnly', () => {
 })
 
 describe('settings watching', () => {
+  it.each(['.pi', '.agents'].flatMap((dir) => ['settings.json', 'settings.local.json'].map((file) => ({ dir, file }))))('loads and reloads trusted $dir/$file hooks while preserving the trust boundary', async ({ dir, file: name }) => {
+    process.env.PI_CODE_SETTINGS_WATCH_INTERVAL_MS = '25'
+    const cwd = tempDir('hooks-proj-')
+    mkdirSync(join(cwd, dir))
+    const file = join(cwd, dir, name)
+    const write = (command: string) => writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ command }] }] } }))
+    write('project-before')
+    const ext = setupExtension()
+    try {
+      await ext.sessionStart('startup', { cwd, isProjectTrusted: () => false })
+      await ext.toolCall('bash', {})
+      expect(commandsRun()).toEqual([])
+      await ext.shutdown('new')
+      await ext.sessionStart('startup', { cwd, isProjectTrusted: () => true })
+      await ext.toolCall('bash', {})
+      expect(commandsRun()).toEqual(['project-before'])
+      write('project-after')
+      await vi.waitFor(
+        async () => {
+          hoisted.calls.length = 0
+          await ext.toolCall('bash', {})
+          expect(commandsRun()).toEqual(['project-after'])
+        },
+        { timeout: 3000, interval: 100 },
+      )
+    } finally {
+      await ext.shutdown('new')
+    }
+  })
+
+  it.each(['.pi', '.agents'])('honors disableAllHooks in %s without allowing another source to re-enable hooks', async (dir) => {
+    const cwd = tempDir('hooks-proj-')
+    writeSettings(hoisted.home, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'blocked' }] }] })
+    mkdirSync(join(cwd, dir))
+    writeFileSync(join(cwd, dir, 'settings.json'), JSON.stringify({ disableAllHooks: true }))
+    writeFileSync(join(cwd, dir, 'settings.local.json'), JSON.stringify({ disableAllHooks: false }))
+    const ext = setupExtension()
+    try {
+      await ext.sessionStart('startup', { cwd, isProjectTrusted: () => true })
+      await ext.toolCall('bash', {})
+      ext.emitSkillHooks({ skillName: 'guarded', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'skill-hook' }] }] } })
+      await ext.toolCall('bash', {})
+      expect(commandsRun()).toEqual([])
+    } finally {
+      await ext.shutdown('new')
+    }
+  })
+
+  it('merges user and project hook sources without duplicate execution', async () => {
+    const cwd = tempDir('hooks-proj-')
+    const shared = { command: 'shared' }
+    for (const dir of [join(hoisted.home, '.claude'), process.env.PI_CODING_AGENT_DIR as string, join(hoisted.home, '.agents'), join(cwd, '.pi'), join(cwd, '.agents')]) {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [shared, { command: dir }] }] } }))
+    }
+    const ext = setupExtension()
+    try {
+      await ext.sessionStart('startup', { cwd, isProjectTrusted: () => false })
+      await ext.toolCall('bash', {})
+      expect(commandsRun()).toHaveLength(4)
+      expect(commandsRun().filter((command) => command === 'shared')).toHaveLength(1)
+      expect(commandsRun()).not.toContain(join(cwd, '.pi'))
+      expect(commandsRun()).not.toContain(join(cwd, '.agents'))
+      await ext.shutdown('new')
+      hoisted.calls.length = 0
+      await ext.sessionStart('startup', { cwd, isProjectTrusted: () => true })
+      await ext.toolCall('bash', {})
+      expect(commandsRun()).toHaveLength(6)
+      expect(commandsRun().filter((command) => command === 'shared')).toHaveLength(1)
+    } finally {
+      await ext.shutdown('new')
+    }
+  })
+
   it('picks up a settings edit mid-session without a restart', async () => {
     // Claude: "Direct edits to hooks in settings files are normally picked up
     // automatically by the file watcher."
