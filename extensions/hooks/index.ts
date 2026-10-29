@@ -794,7 +794,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
     backgroundKills.clear()
   })
 
-  // Claude's /hooks manages hook configuration; pi-code's is a viewer: hook failures
+  // Claude's /hooks manages hook configuration; pi-skills-hooks's is a viewer: hook failures
   // are otherwise opaque, so showing the resolved chain per event, with the settings
   // file each entry came from, is the debugging surface.
   pi.registerCommand('hooks', {

@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a Claude Code behavior or improvement for pi-code
+description: Suggest a Claude Code behavior or improvement for pi-skills-hooks
 labels: [enhancement]
 body:
   - type: textarea

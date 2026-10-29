@@ -42,7 +42,7 @@ export function watchSettingsFiles(files: string[], reload: () => void): () => v
       try {
         reload()
       } catch (error) {
-        console.warn(`pi-code: settings reload failed: ${errorMessage(error)}`)
+        console.warn(`pi-skills-hooks: settings reload failed: ${errorMessage(error)}`)
       }
     }
   }, interval)

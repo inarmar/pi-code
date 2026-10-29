@@ -188,7 +188,7 @@ function mergeHooksJson(config: HooksConfig, raw: string, source: string, source
   } catch (error) {
     // Every hook this source declares is now absent, a policy hook among them, so the
     // failure is named rather than left to look like a file with no hooks in it.
-    console.warn(`pi-code-hooks: ignoring the hooks in ${source}: ${errorMessage(error)}`)
+    console.warn(`pi-skills-hooks: ignoring the hooks in ${source}: ${errorMessage(error)}`)
     return
   }
   for (const [event, matchers] of Object.entries(parsed?.hooks ?? {})) {
@@ -206,28 +206,28 @@ function mergeHooksJson(config: HooksConfig, raw: string, source: string, source
   }
 }
 
-/** A matcher entry pi-code can run: an object whose `hooks` is a list. Anything else
+/** A matcher entry pi-skills-hooks can run: an object whose `hooks` is a list. Anything else
  * is reported by name and skipped, so one bad entry costs its own hooks, not the
  * session's tool calls. */
 function isUsableMatcher(entry: unknown, file: string, event: string): entry is HookMatcher {
   const candidate = entry as HookMatcher | null
   if (candidate === null || typeof candidate !== 'object') {
-    console.warn(`pi-code-hooks: ignoring a non-object ${event} entry in ${file}`)
+    console.warn(`pi-skills-hooks: ignoring a non-object ${event} entry in ${file}`)
     return false
   }
   if (candidate.hooks !== undefined && !Array.isArray(candidate.hooks)) {
-    console.warn(`pi-code-hooks: ignoring ${event} entry in ${file}: "hooks" must be a list`)
+    console.warn(`pi-skills-hooks: ignoring ${event} entry in ${file}: "hooks" must be a list`)
     return false
   }
   // The list's entries too: the dispatcher reads `.type` of each, so one `null` (a
   // hand-edit that removed an entry's body) failed every tool call for the session.
   if (Array.isArray(candidate.hooks)) {
     const objects = candidate.hooks.filter((hook: unknown) => isRecord(hook))
-    if (objects.length !== candidate.hooks.length) console.warn(`pi-code-hooks: ignoring ${candidate.hooks.length - objects.length} non-object hook(s) in a ${event} entry in ${file}`)
+    if (objects.length !== candidate.hooks.length) console.warn(`pi-skills-hooks: ignoring ${candidate.hooks.length - objects.length} non-object hook(s) in a ${event} entry in ${file}`)
     candidate.hooks = objects as HookCommand[]
   }
   if (candidate.matcher !== undefined && typeof candidate.matcher !== 'string') {
-    console.warn(`pi-code-hooks: ignoring ${event} entry in ${file}: "matcher" must be a string`)
+    console.warn(`pi-skills-hooks: ignoring ${event} entry in ${file}: "matcher" must be a string`)
     return false
   }
   return true

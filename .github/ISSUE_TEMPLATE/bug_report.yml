@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in pi-code is not working as expected
+description: Something in pi-skills-hooks is not working as expected
 labels: [bug]
 body:
   - type: markdown
@@ -30,8 +30,8 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: pi-code, pi, Node, and OS
-      placeholder: "pi-code 1.0.5, pi x.y.z, Node 22.19, macOS 15"
+      description: pi-skills-hooks, pi, Node, and OS
+      placeholder: "pi-skills-hooks 1.0.5, pi x.y.z, Node 22.19, macOS 15"
     validations:
       required: true
   - type: textarea

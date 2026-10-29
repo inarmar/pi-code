@@ -1,7 +1,7 @@
 /**
  * Global test hygiene: the suite must be immune to the host environment.
  *
- * pi-code's own dev loop runs the tests inside Claude Code and inside pi
+ * pi-skills-hooks's own dev loop runs the tests inside Claude Code and inside pi
  * subagents, so the host env carries the very variables the source reads
  * (CLAUDECODE, PI_CODE_SUBAGENT, CLAUDE_CONFIG_DIR, the MCP timeout family).
  * They are deleted at module load, before any test file imports source that
@@ -89,6 +89,6 @@ afterEach(() => {
   // one test leaves held would be delivered into the next test's session start.
   const holder = globalThis as Record<symbol, unknown>
   for (const key of Object.getOwnPropertySymbols(holder)) {
-    if (key.description?.startsWith('pi-code.session-mailbox.')) delete holder[key]
+    if (key.description?.startsWith('pi-skills-hooks.session-mailbox.')) delete holder[key]
   }
 })

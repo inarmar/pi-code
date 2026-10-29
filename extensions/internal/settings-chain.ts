@@ -3,7 +3,7 @@
  * setting is read from, newest winning. User settings lead; the project's settings.json
  * (from cwd) and settings.local.json (at the repository root, see localSettingsDir)
  * follow only when the project is trusted by Pi. Hooks and skill-shell policy
- * use this file chain; pi-code does not provide separate settings CLI flags.
+ * use this file chain; pi-skills-hooks does not provide separate settings CLI flags.
  */
 
 import * as fs from 'node:fs'

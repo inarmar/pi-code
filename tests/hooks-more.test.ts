@@ -224,7 +224,7 @@ const setupExtension = () => {
     compacted: (reason: string, summary?: string) => handler('session_compact')({ reason, ...(summary === undefined ? {} : { compactionEntry: { summary } }) }, defaultCtx),
     shutdown: (reason: string, ctx: Record<string, unknown> = {}) => handler('session_shutdown')({ reason }, { ...defaultCtx, ...ctx }),
     beforeAgentStart: (event: Record<string, unknown> = { systemPrompt: '' }) => handler('before_agent_start')(event),
-    emitSkillHooks: (event: unknown) => busHandlers.get('pi-code:skill-hooks')?.(event),
+    emitSkillHooks: (event: unknown) => busHandlers.get('pi-skills-hooks:skill-hooks')?.(event),
   }
 }
 
@@ -249,7 +249,7 @@ describe('runHookCommand process wiring', () => {
   })
 
   it('marks the hook child with CLAUDECODE=1 even when the parent env lacks it', async () => {
-    // Hermetic: pi-code itself may run under a parent that already set CLAUDECODE, so
+    // Hermetic: pi-skills-hooks itself may run under a parent that already set CLAUDECODE, so
     // clear it to prove runHookCommand adds the flag rather than merely inheriting it.
     const saved = process.env.CLAUDECODE
     delete process.env.CLAUDECODE
@@ -2357,7 +2357,7 @@ describe('hooks polish: interrupts, timeout defaults, prompt-hook contract', () 
 
   it('gives prompt hooks the documented 30s default and keeps command hooks at the noted 60s', () => {
     // Claude defaults: 30 for prompt; the 60s command default is
-    // pi-code's documented fail-closed divergence from Claude's 600.
+    // pi-skills-hooks's documented fail-closed divergence from Claude's 600.
     expect(timeoutMs({ command: 'x', type: 'prompt' })).toBe(30_000)
     expect(timeoutMs({ command: 'x' })).toBe(60_000)
   })

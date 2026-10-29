@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for helping improve pi-code. This is a pack of [pi](https://pi.dev) extensions that bridge a project's `.claude/` configuration into pi and add the Claude Code features pi lacks. Each feature is a self-contained extension under [`extensions/`](extensions).
+Thanks for helping improve pi-skills-hooks. This is a pack of [pi](https://pi.dev) extensions that bridge a project's `.claude/` configuration into pi and add the Claude Code features pi lacks. Each feature is a self-contained extension under [`extensions/`](extensions).
 
 ## Getting started
 
 Requirements: Node `>=22.19` and `pi` on your `PATH`.
 
 ```bash
-git clone https://github.com/ilovepixelart/pi-code
-cd pi-code
+git clone https://github.com/inarmar/pi-code pi-skills-hooks
+cd pi-skills-hooks
 npm install
 npm run check
 ```
@@ -18,7 +18,7 @@ npm run check
 To try your changes in a real session, install the checkout and reload after edits:
 
 ```bash
-pi install ./pi-code
+pi install ./pi-skills-hooks
 # edit, then /reload inside pi
 ```
 

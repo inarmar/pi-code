@@ -1,4 +1,4 @@
-# pi-code
+# pi-skills-hooks
 
 Claude Code **skills** and **hooks** compatibility for [Pi](https://pi.dev).
 
@@ -13,6 +13,9 @@ This package does not implement commands, MCP servers, Claude plugins, subagents
 
 Project-scoped skill and hook resources use Pi's native project trust. The process must be trusted by Pi before project-controlled executable configuration is loaded. In RPC mode, dialogs and notifications depend on the hosting client.
 
+The local distribution is named `pi-skills-hooks`; the source fork remains
+https://github.com/inarmar/pi-code.
+
 ## Install
 
 ```sh
@@ -22,7 +25,7 @@ pi install git:github.com/inarmar/pi-code
 Or install a local checkout:
 
 ```sh
-pi install ./pi-code
+pi install ./pi-skills-hooks
 ```
 
 See [Skills](docs/skills.md) and [Hooks](docs/hooks.md).

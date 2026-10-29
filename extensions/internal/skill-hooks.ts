@@ -5,7 +5,7 @@
  * announces the declaration.
  */
 
-export const SKILL_HOOKS_CHANNEL = 'pi-code:skill-hooks'
+export const SKILL_HOOKS_CHANNEL = 'pi-skills-hooks:skill-hooks'
 
 export interface SkillHooksEvent {
   skillName: string

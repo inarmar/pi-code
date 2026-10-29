@@ -54,7 +54,7 @@ function readOneSettingsFile(file: string): Record<string, unknown> {
     // there disabled every policy the file carries (exclusion lists and disableAllHooks) on every session, with nothing said anywhere.
     if (!warnedUnparsable.has(file)) {
       warnedUnparsable.add(file)
-      console.warn(`pi-code: ignoring ${file}: not valid JSON; the managed policy it carries is not applied`)
+      console.warn(`pi-skills-hooks: ignoring ${file}: not valid JSON; the managed policy it carries is not applied`)
     }
   }
   return {}

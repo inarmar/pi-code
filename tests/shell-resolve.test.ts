@@ -88,7 +88,7 @@ describe('resolveGitBash', () => {
  * Oracle: the rule Go made its default in 1.19, and the one resolveGitBash already
  * applied. `os/exec` refuses a program resolved through a path entry "relative to the
  * current directory" (ErrDot); Windows exposes NoDefaultCurrentDirectoryInExePath for
- * the same purpose. Node honors neither (nodejs/node#46264), so pi-code enforces it in
+ * the same purpose. Node honors neither (nodejs/node#46264), so pi-skills-hooks enforces it in
  * the one place it resolves its own shells.
  *
  * Written a row per resolver rather than a suite per function, because the defect this

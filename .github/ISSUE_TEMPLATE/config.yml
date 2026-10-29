@@ -5,4 +5,4 @@ contact_links:
     about: Report security issues privately, never as a public issue.
   - name: pi documentation
     url: https://pi.dev
-    about: Docs for the pi coding agent that pi-code extends.
+    about: Docs for the pi coding agent that pi-skills-hooks extends.

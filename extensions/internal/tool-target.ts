@@ -11,7 +11,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** The tools that name a file pi-code acts on. */
+/** The tools that name a file pi-skills-hooks acts on. */
 const FILE_TOOLS: ReadonlySet<string> = new Set(['read', 'edit', 'write'])
 
 /** The spaces pi folds to a plain one before resolving (pi dist/utils/paths). */

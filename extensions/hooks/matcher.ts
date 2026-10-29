@@ -66,7 +66,7 @@ function compileMatcher(matcher: string): CompiledMatcher {
     } catch (error) {
       // The fallback matches the literal text, which almost never matches a tool name, so
       // the hook simply never fires. Say so: the matcher reads as merely wrong otherwise.
-      console.warn(`pi-code-hooks: matcher ${matcher} is not a valid regular expression (${errorMessage(error)}); it will only match a tool of that exact name`)
+      console.warn(`pi-skills-hooks: matcher ${matcher} is not a valid regular expression (${errorMessage(error)}); it will only match a tool of that exact name`)
       compiled = { tokens: exactTokens(matcher) }
     }
   }
@@ -86,7 +86,7 @@ function matcherApplies(matcher: string | undefined, names: readonly string[]): 
   return names.some((name) => tokens.has(foldName(name)))
 }
 
-/** A hook entry pi-code can run: command, HTTP POST, or model-evaluated prompt. */
+/** A hook entry pi-skills-hooks can run: command, HTTP POST, or model-evaluated prompt. */
 function isRunnableHook(hook: HookCommand): boolean {
   if (hook.type === 'http') return typeof hook.url === 'string' && /^https?:\/\//.test(hook.url)
   if (hook.type === 'prompt') return typeof hook.prompt === 'string' && hook.prompt.length > 0

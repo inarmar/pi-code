@@ -90,7 +90,7 @@ describe('extension wiring', () => {
 
     const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>()
     skillsExt({ on: (name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) => handlers.set(name, fn) } as never)
-    // Pi's own trust state is authoritative. No separate pi-code approval is requested.
+    // Pi's own trust state is authoritative. No separate pi-skills-hooks approval is requested.
     const trusted = (await handlers.get('resources_discover')?.({ reason: 'startup' }, { cwd, isProjectTrusted: () => true })) as { skillPaths: string[] } | undefined
     expect(trusted).toEqual({ skillPaths: [homeSkills, join(cwd, '.claude', 'skills')] })
 
@@ -278,7 +278,7 @@ describe('skill frontmatter hooks publication', () => {
     await input('/skill:secure-ops')
 
     expect(emitted).toContainEqual({
-      channel: 'pi-code:skill-hooks',
+      channel: 'pi-skills-hooks:skill-hooks',
       data: { skillName: 'secure-ops', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: './scripts/check.sh' }] }] } },
     })
   })
@@ -325,11 +325,11 @@ describe('hooks from any pi-resolved skill', () => {
     await input('/skill:verify', 'extension')
     expect(emitted).toEqual([])
 
-    // Native pi, not pi-code, expands the command's body.
+    // Native pi, not pi-skills-hooks, expands the command's body.
     expect(await input('/skill:verify tests')).toBeUndefined()
     expect(emitted).toEqual([
       {
-        channel: 'pi-code:skill-hooks',
+        channel: 'pi-skills-hooks:skill-hooks',
         data: { skillName: 'verify', hooks: { Stop: [{ hooks: [{ type: 'command', command: './verify.sh' }] }] } },
       },
     ])
@@ -348,7 +348,7 @@ describe('hooks from any pi-resolved skill', () => {
     expect(await input('/skill:guard')).toBeUndefined()
     expect(emitted).toEqual([
       {
-        channel: 'pi-code:skill-hooks',
+        channel: 'pi-skills-hooks:skill-hooks',
         data: { skillName: 'guard', hooks: { Stop: [{ hooks: [{ command: 'native.sh' }] }] } },
       },
     ])

@@ -856,7 +856,7 @@ describe('hook command child environment', () => {
     const savedRows = Object.getOwnPropertyDescriptor(process.stdout, 'rows')
     Object.defineProperty(process.stdout, 'columns', { value: 121, configurable: true })
     Object.defineProperty(process.stdout, 'rows', { value: 43, configurable: true })
-    // Hermetic: pi-code itself may run under Claude Code, whose parent env already
+    // Hermetic: pi-skills-hooks itself may run under Claude Code, whose parent env already
     // carries the marker; clear it to prove runHookCommand sets it.
     const savedChild = process.env.CLAUDE_CODE_CHILD_SESSION
     delete process.env.CLAUDE_CODE_CHILD_SESSION
