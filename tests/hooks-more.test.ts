@@ -919,7 +919,16 @@ describe('hooks extension session_start', () => {
     writeSettings(project, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'project-pre' }] }] })
 
     const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: project, isProjectTrusted: () => true, hasUI: true, ui: { confirm: async () => { throw new Error('Unexpected second approval') } } })
+    await ext.sessionStart('startup', {
+      cwd: project,
+      isProjectTrusted: () => true,
+      hasUI: true,
+      ui: {
+        confirm: async () => {
+          throw new Error('Unexpected second approval')
+        },
+      },
+    })
     await ext.toolCall('bash', {})
     expect(commandsRun()).toEqual(['home-session', 'home-pre', 'project-pre'])
   })
