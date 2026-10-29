@@ -233,9 +233,6 @@ export function formatAchievedGoal(summary: GoalSummary): string {
 export const DEFAULT_CHECKIN_MINUTES = 30
 /** Later check-ins wait twice as long each, up to four times the first interval. */
 const MAX_CHECKIN_DOUBLINGS = 2
-/** Idle check-ins per goal between user prompts; the third says they are paused. */
-export const MAX_IDLE_CHECKINS = 3
-
 /** Milliseconds until the next check-in given how many have been delivered for this
  * goal: CLAUDE_CODE_GOAL_CHECKIN_MINUTES (0 turns check-ins off, junk falls back to
  * the default) scaled by Claude's doubling. */
