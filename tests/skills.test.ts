@@ -378,10 +378,12 @@ describe('hooks from any pi-resolved skill', () => {
 
     // Native pi, not pi-code, expands the command's body.
     expect(await input('/skill:verify tests')).toBeUndefined()
-    expect(emitted).toEqual([{
-      channel: 'pi-code:skill-hooks',
-      data: { skillName: 'verify', hooks: { Stop: [{ hooks: [{ type: 'command', command: './verify.sh' }] }] } },
-    }])
+    expect(emitted).toEqual([
+      {
+        channel: 'pi-code:skill-hooks',
+        data: { skillName: 'verify', hooks: { Stop: [{ hooks: [{ type: 'command', command: './verify.sh' }] }] } },
+      },
+    ])
   })
 
   it('uses the path pi actually resolved when a native skill shadows a Claude skill', async () => {
@@ -395,10 +397,12 @@ describe('hooks from any pi-resolved skill', () => {
     writeFileSync(claudeFile, '---\nname: guard\ndescription: claude\nhooks:\n  Stop:\n    - hooks: [{ command: claude.sh }]\n---\nClaude')
     const { input, emitted } = setupNative(cwd, 'guard', nativeFile)
     expect(await input('/skill:guard')).toBeUndefined()
-    expect(emitted).toEqual([{
-      channel: 'pi-code:skill-hooks',
-      data: { skillName: 'guard', hooks: { Stop: [{ hooks: [{ command: 'native.sh' }] }] } },
-    }])
+    expect(emitted).toEqual([
+      {
+        channel: 'pi-code:skill-hooks',
+        data: { skillName: 'guard', hooks: { Stop: [{ hooks: [{ command: 'native.sh' }] }] } },
+      },
+    ])
   })
 
   it('does not block pi expansion for missing or invalid skill files', async () => {
