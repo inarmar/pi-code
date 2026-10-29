@@ -6,7 +6,6 @@ import { matchingCommands, resetMatcherCache } from '../extensions/hooks/index.t
 import { substituteArgs } from '../extensions/internal/command-file.ts'
 import { globToRegExpSource, matchesPathRules } from '../extensions/internal/path-rules.ts'
 import { shellWords } from '../extensions/internal/shell-split.ts'
-import { interpolateEnv } from '../extensions/mcp/config.ts'
 
 // Property-based pins for the parser-shaped modules: each property is a stated
 // invariant from the module's contract, explored across generated inputs and
@@ -61,31 +60,6 @@ describe('path-rules properties', () => {
       fc.property(fc.stringMatching(/^[ -~]{0,30}$/), (pattern) => {
         const source = globToRegExpSource(pattern)
         expect(() => new RegExp(source)).not.toThrow()
-      }),
-      RUNS,
-    )
-  })
-})
-
-describe('interpolateEnv properties', () => {
-  // Any printable value, including ones that look like ${OTHER} or carry $&:
-  // the function-form replace must never rescan or reinterpret them.
-  const value = fc.stringMatching(/^[ -~]{0,25}$/)
-
-  it('returns the environment value verbatim, whatever it contains', () => {
-    void fc.assert(
-      fc.property(value, (v) => {
-        expect(interpolateEnv('${X}', { X: v })).toBe(v)
-      }),
-      RUNS,
-    )
-  })
-
-  it('honors the shell :- contract: unset OR empty falls back to the default', () => {
-    void fc.assert(
-      fc.property(fc.stringMatching(/^[ -|~]{0,20}$/), (fallback) => {
-        expect(interpolateEnv(`\${X:-${fallback}}`, {})).toBe(fallback)
-        expect(interpolateEnv(`\${X:-${fallback}}`, { X: '' })).toBe(fallback)
       }),
       RUNS,
     )

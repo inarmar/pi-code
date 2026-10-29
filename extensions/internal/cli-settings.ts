@@ -157,7 +157,7 @@ export function resolveSettingsFlag(raw: string, cwd: string): { file: string } 
 }
 
 /** Every flag as pi hands it over. Any refusal fails closed: no file source, no
- * snapshot, nothing forwarded, no MCP server once an MCP flag was given, only the errors. */
+ * snapshot, nothing forwarded, only the errors. */
 export function resolveCliSettings(flags: CliFlags, cwd: string): CliSettings {
   const result = noFlags()
   if (typeof flags.settings === 'string') {
@@ -191,7 +191,7 @@ export function resolveCliSettingsOnce(flags: CliFlags, cwd: string): CliSetting
     memo = new Map()
     resolvedSlot.set(memo)
   }
-  const key = JSON.stringify([flags.settings, flags.settingSources, flags.mcpConfig, flags.strictMcpConfig])
+  const key = JSON.stringify([flags.settings, flags.settingSources])
   let resolved = memo.get(key)
   if (resolved === undefined) {
     resolved = resolveCliSettings(flags, cwd)
