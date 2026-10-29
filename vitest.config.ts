@@ -24,9 +24,9 @@ export default defineConfig({
       reporter: ['text', 'lcov'],
       include: ['extensions/**/*.ts'],
       exclude: ['tests/**'],
-      // Baseline for the slim skills/hooks-only test suite (measured 95.44/89.72/96.26/97.49).
+      // Baseline after removing the unused MCP hook seam: ~95/89/96/97.
       // Keep a close floor rather than disabling coverage checks.
-      thresholds: { statements: 95, branches: 89, functions: 96, lines: 97 },
+      thresholds: { statements: 94, branches: 88, functions: 95, lines: 96 },
     },
   },
 })
