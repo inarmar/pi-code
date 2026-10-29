@@ -224,7 +224,9 @@ async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: Ext
   // invoked, for the rest of the session; the hooks extension owns running them,
   // so the declaration is announced over the shared bus.
   const frontmatter = parseClaudeFrontmatter<Record<string, unknown>>(content).frontmatter
-  const contextMode = String(frontmatter.context ?? '').trim().toLowerCase()
+  const contextMode = String(frontmatter.context ?? '')
+    .trim()
+    .toLowerCase()
   if (contextMode === 'fork') {
     ctx.ui.notify(`Skill ${name} requires context: fork, which is unavailable without subagents.`, 'warning')
     return { action: 'handled' }
