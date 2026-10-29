@@ -254,7 +254,6 @@ export default function hooksExtension(pi: ExtensionAPI) {
     clearTimeout(idlePromptTimer)
     idlePromptTimer = undefined
   }
-  let sessionCtx: ExtensionContext | undefined
   /** Claude's allowManagedHooksOnly: only the managed hook set runs. */
   let managedHooksOnly = false
   /** Skill hooks active for the current agent run, including Stop continuations. */
@@ -433,7 +432,6 @@ export default function hooksExtension(pi: ExtensionAPI) {
   pi.on('agent_settled', expireSkillHooks)
 
   pi.on('session_start', async (event, ctx) => {
-    sessionCtx = ctx
     // pi's CLI builds a fresh extension instance per session replacement; only RPC mode can
     // reuse one across sessions. A mid-turn /new there fires session_start on
     // the same instance while a Stop-hook continuation streak is in flight; it must not

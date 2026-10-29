@@ -1,7 +1,7 @@
 /** Dynamic content expansion for Claude skills. This is not a slash-command extension. */
 import * as fs from 'node:fs'
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import * as path from 'node:path'
+import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { type ParsedCommand, substituteArgsDetailed, substituteVars } from './command-file.ts'
 import { type CommandExec, expandDynamicContent, resolvePowershellBinary, spanExec } from './command-spans.ts'
 import { claudeEffortLevel } from './effort.ts'
@@ -16,8 +16,11 @@ export const SHELL_DISABLED_PLACEHOLDER = '[shell command execution disabled by 
 export function shellExecutionDisabled(cwd: string, home: string, trusted: boolean): boolean {
   if (readManagedSettings().disableSkillShellExecution === true) return true
   return claudeSettingsChain(cwd, home, trusted).some((file) => {
-    try { return (JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>).disableSkillShellExecution === true }
-    catch { return false }
+    try {
+      return (JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>).disableSkillShellExecution === true
+    } catch {
+      return false
+    }
   })
 }
 
@@ -80,4 +83,3 @@ export async function expandCommand(runner: SpanRunner, parsed: ParsedCommand, a
   if (args.trim().length > 0 && !consumed) expanded += `\n\nARGUMENTS: ${args.trim()}`
   return expanded
 }
-
