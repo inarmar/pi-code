@@ -17,8 +17,9 @@
  *                      context before the first prompt via `before_agent_start`)
  * - UserPromptSubmit-> pi `input` (can block the prompt via `handled`, or inject
  *                      additional context by transforming the submitted text)
- * - Stop            -> pi `agent_end` (a block feeds its reason back as a new turn,
- *                      with stop_hook_active as the loop guard)
+ * - Stop            -> pi `agent_before_settle` (a block appends feedback to the
+ *                      session boundary and continues the same run, with
+ *                      stop_hook_active as the loop guard)
  * - PreCompact      -> pi `session_before_compact` (fire-and-forget)
  * - PostCompact     -> pi `session_compact` (fire-and-forget); the same event also
  *                      fires SessionStart with source "compact", as Claude does
@@ -193,14 +194,6 @@ function stopVerdict(result: HookRunResult, stopMessages: string[]): { block: bo
   const context = parsed?.hookSpecificOutput?.additionalContext
   if (typeof context === 'string' && context.length > 0) return { block: true, reason: context, stop: false }
   return { block: false, reason: '', stop: false }
-}
-
-/** Whether the turn ended in a user interrupt: pi marks the aborted turn's final
- * assistant message stopReason "aborted". */
-function endedByInterrupt(event: { messages?: Array<{ role: string; stopReason?: string }> }): boolean {
-  const turnMessages = event.messages ?? []
-  const lastAssistant = [...turnMessages].reverse().find((message) => message.role === 'assistant')
-  return lastAssistant?.stopReason === 'aborted'
 }
 
 /** The stop reason of the first PostToolUse result that set continue false, if any. */
@@ -749,16 +742,8 @@ export default function hooksExtension(pi: ExtensionAPI) {
     return { action: 'continue' }
   })
 
-  // Claude's Stop hook can prevent stopping: a block feeds its reason back as a new
-  // turn, and stop_hook_active in the payload tells the next firing it is already
-  // continuing from a stop hook, which is the hook script's documented loop guard.
-  // Only exit 2 and decision:"block" continue; continue:false means "stay stopped".
-  //
-  // On agent_end rather than agent_settled: agent_settled is only emitted after every
-  // agent_end handler returns, and a peer extension (plan mode) blocks its agent_end
-  // handler on a UI dialog, which would starve the Stop hook and idle notification
-  // until the user answers it. agent_end can fire slightly early before a rare
-  // automatic retry or compaction; that is the better tradeoff.
+  // Idle notification and child SubagentStop still use agent_end. Main-agent Stop
+  // must wait for agent_before_settle, after automatic retries and compaction.
   /** Claude's Notification event, for the one type pi can honestly source: the agent
    * finished and is waiting for input. idle_prompt fires when the turn ended about 60
    * seconds ago and the user has not typed since, so it arms here and input or the next
@@ -792,44 +777,47 @@ export default function hooksExtension(pi: ExtensionAPI) {
     await runNotifyHooks(subStop, subPayload, boundRunner(ctx)).catch(() => {})
   }
 
-  /** Feed a Stop hook's block reason back as a new turn, unless the block cap is reached. */
-  const continueFromStopBlock = (ctx: ExtensionContext, reason: string): void => {
+  /** Limit consecutive Stop blocks without user input. The boundary handler adds
+   * the feedback and requests continuation only when this returns true. */
+  const allowStopContinuation = (ctx: ExtensionContext): boolean => {
     stopHookBlockCount += 1
     const cap = stopHookBlockCap()
     if (stopHookBlockCount >= cap) {
-      // Claude overrides a Stop hook that has blocked cap times in a row with no user
-      // progress: suppress the continuation, warn, and let the turn end so the loop cannot
-      // run forever. Reset the count so a later run (or user turn) starts clean.
+      // End the run after the cap rather than continuing indefinitely.
       stopHookActive = false
       stopHookBlockCount = 0
       ctx.ui.notify(`Stop hook block cap reached (${cap} consecutive blocks); ending the turn.`, 'warning')
-      return
+      return false
     }
     stopHookActive = true
-    pi.sendMessage({ customType: 'claude-stop-hook', content: reason, display: true }, { triggerTurn: true })
+    return true
   }
 
   pi.on('agent_end', async (event, ctx) => {
     armIdlePrompt(ctx)
-    await fireChildSubagentStop(event as { messages?: Array<{ role: string; content: unknown }> }, ctx)
+    await fireChildSubagentStop(event, ctx)
+  })
 
-    // Stop is the main agent's event; the child's completion was handled above.
+  pi.on('agent_before_settle', async (event, ctx) => {
+    // Child agent-frontmatter Stop hooks are converted to SubagentStop at agent_end.
     if (inSubagentChild()) return
+    // An interrupt or unrecoverable provider error is not a normal Claude Stop.
+    if (event.outcome !== 'completed') {
+      stopHookActive = false
+      stopHookBlockCount = 0
+      return
+    }
     // Stop has no matcher support (a stray matcher is ignored, as Claude documents)
     // and an `if`-carrying hook never runs on a non-tool event.
     const commands = allCommands(config.Stop).filter((command) => passesIfFilter(command, undefined))
     if (commands.length === 0) {
       stopHookActive = false
+      stopHookBlockCount = 0
       return
     }
-    // Claude: Stop does not run when the stoppage was a user interrupt.
-    if (endedByInterrupt(event as { messages?: Array<{ role: string; stopReason?: string }> })) {
-      stopHookActive = false
-      return
-    }
-    // Claude's Stop payload carries the turn's final assistant text so a hook need
-    // not re-read the transcript; included only when there is one.
-    const lastText = lastAssistantText((event as { messages?: Array<{ role: string; content: unknown }> }).messages ?? [])
+    // The boundary context includes the final assistant text even after any
+    // automatic retry or compaction; do not report an earlier agent_end message.
+    const lastText = lastAssistantText(event.context.contextMessages)
     const payload = { hook_event_name: 'Stop', stop_hook_active: stopHookActive, ...(lastText ? { last_assistant_message: lastText } : {}) }
     const run = boundRunner(ctx)
     const results = await Promise.all(commands.map((command) => run(command, payload, timeoutMs(command))))
@@ -839,12 +827,17 @@ export default function hooksExtension(pi: ExtensionAPI) {
     const block = verdicts.some((verdict) => verdict.stop) ? undefined : verdicts.find((verdict) => verdict.block)
     for (const message of stopMessages) ctx.ui.notify(message, 'warning')
     if (!block) {
-      // A non-blocking Stop breaks the streak: the next block starts a fresh count.
       stopHookActive = false
       stopHookBlockCount = 0
       return
     }
-    continueFromStopBlock(ctx, block.reason)
+    if (!allowStopContinuation(ctx)) return
+    // Append model-visible feedback before settling, and resume the same agent
+    // run. pi.sendMessage(triggerTurn) here would create an unnecessary new run.
+    return {
+      entries: [...event.entries, { type: 'custom_message' as const, customType: 'claude-stop-hook', content: block.reason, display: true }],
+      continue: true,
+    }
   })
 
   pi.on('session_before_compact', async (event, ctx) => {

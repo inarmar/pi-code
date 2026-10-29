@@ -173,6 +173,7 @@ const setupExtension = () => {
   const handlers = new Map<string, Handler>()
   const busHandlers = new Map<string, (data: unknown) => void>()
   const sent: Array<{ message: unknown; options: unknown }> = []
+  const continued: unknown[] = []
   const commands = new Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> }>()
   hooksExtension({
     on: (name: string, fn: Handler) => handlers.set(name, fn),
@@ -205,6 +206,7 @@ const setupExtension = () => {
     },
     notes,
     sent,
+    continued,
     sessionStart: (reason: string, ctx: Record<string, unknown>) => handler('session_start')({ reason }, { ...defaultCtx, ...ctx }),
     /** The ctx is handed over as is: a spread would flatten the live getters pi's own ctx has. */
     sessionStartWithLiveCtx: (reason: string, ctx: Record<string, unknown>) => handler('session_start')({ reason }, ctx),
@@ -216,6 +218,11 @@ const setupExtension = () => {
     userBash: (command: string, ctxOverride: Record<string, unknown> = {}) => handler('user_bash')({ type: 'user_bash', command, excludeFromContext: false, cwd: '/proj' }, { ...defaultCtx, ...ctxOverride }),
     input: (text: string, source = 'interactive', streamingBehavior?: 'steer' | 'followUp') => handler('input')({ text, source, streamingBehavior }, defaultCtx),
     agentEnd: (messages: unknown[] = []) => handler('agent_end')({ messages }, defaultCtx),
+    agentBeforeSettle: async (messages: unknown[] = [], outcome = 'completed', entries: unknown[] = []) => {
+      const result = await handler('agent_before_settle')({ entries, continue: false, context: { contextMessages: messages }, outcome }, defaultCtx)
+      if ((result as { continue?: boolean } | undefined)?.continue) continued.push(result)
+      return result
+    },
     modelSelect: (to: string, from?: string, source = 'set') => handler('model_select')({ model: { id: to, name: to }, previousModel: from ? { id: from, name: from } : undefined, source }, defaultCtx),
     agentSettled: () => handler('agent_settled')({}, defaultCtx),
     beforeCompact: (reason: string, customInstructions?: string) => handler('session_before_compact')({ reason, customInstructions }, defaultCtx),
@@ -1614,17 +1621,46 @@ describe('hooks extension notify-style events', () => {
     }
   })
 
-  it('runs Stop hooks on agent end with stop_hook_active false', async () => {
+  it('runs Stop only at agent_before_settle, after agent_end', async () => {
+    const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopper' }] }] })
+    await ext.agentEnd([{ role: 'assistant', content: 'provisional result' }])
+    expect(commandsRun()).toEqual([])
+    await ext.agentBeforeSettle([{ role: 'assistant', content: 'final result' }])
+    expect(commandsRun()).toEqual(['stopper'])
+    expect(JSON.parse(recordFor('stopper').stdin).last_assistant_message).toBe('final result')
+  })
+
+  it('preserves earlier boundary entries and continues within the same agent run', async () => {
+    const ext = await withHooks({ Stop: [{ hooks: [{ command: 'gate' }] }] })
+    script('gate', { stdout: [JSON.stringify({ decision: 'block', reason: 'tests failed' })], code: 0 })
+    const existing = { type: 'custom', customType: 'prior-extension', data: { passed: true } }
+    const result = await ext.agentBeforeSettle([], 'completed', [existing])
+    expect(result).toEqual({
+      entries: [existing, { type: 'custom_message', customType: 'claude-stop-hook', content: 'tests failed', display: true }],
+      continue: true,
+    })
+    expect(ext.sent).toEqual([])
+  })
+
+  it('skips Stop on aborted or failed outcomes', async () => {
+    const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopper' }] }] })
+    await ext.agentBeforeSettle([], 'aborted')
+    await ext.agentBeforeSettle([], 'error')
+    expect(commandsRun()).toEqual([])
+    expect(ext.continued).toEqual([])
+  })
+
+  it('runs Stop hooks at agent_before_settle with stop_hook_active false', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopped' }] }] })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     expect(commandsRun()).toEqual(['stopped'])
     expect(JSON.parse(recordFor('stopped').stdin)).toEqual({ ...COMMON, hook_event_name: 'Stop', stop_hook_active: false })
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
   })
 
   it('includes the final assistant text as last_assistant_message on Stop', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopped' }] }] })
-    await ext.agentEnd([
+    await ext.agentBeforeSettle([
       { role: 'user', content: 'hi' },
       { role: 'assistant', content: [{ type: 'text', text: 'all done' }] },
     ])
@@ -1634,23 +1670,23 @@ describe('hooks extension notify-style events', () => {
   it('continues the conversation when a Stop hook blocks, with the reason', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
     script('keep-going', { stdout: [JSON.stringify({ decision: 'block', reason: 'tests are still red' })], code: 0 })
-    await ext.agentEnd()
-    expect(ext.sent).toEqual([{ message: { customType: 'claude-stop-hook', content: 'tests are still red', display: true }, options: { triggerTurn: true } }])
+    await ext.agentBeforeSettle()
+    expect(ext.continued).toEqual([{ entries: [{ type: 'custom_message', customType: 'claude-stop-hook', content: 'tests are still red', display: true }], continue: true }])
   })
 
   it('reports stop_hook_active true while continuing from a stop hook, then resets', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
     script('keep-going', { stderr: ['not done'], code: 2 })
-    await ext.agentEnd()
-    expect(ext.sent).toHaveLength(1)
+    await ext.agentBeforeSettle()
+    expect(ext.continued).toHaveLength(1)
 
     script('keep-going', { code: 0, stderr: [] })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     const second = hoisted.calls.filter((call) => call.command === 'keep-going')[1]
     expect(JSON.parse(second.stdin)).toEqual({ ...COMMON, hook_event_name: 'Stop', stop_hook_active: true })
-    expect(ext.sent).toHaveLength(1)
+    expect(ext.continued).toHaveLength(1)
 
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     const third = hoisted.calls.filter((call) => call.command === 'keep-going')[2]
     expect(JSON.parse(third.stdin)).toEqual({ ...COMMON, hook_event_name: 'Stop', stop_hook_active: false })
   })
@@ -1660,12 +1696,12 @@ describe('hooks extension notify-style events', () => {
       const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
       script('keep-going', { stderr: ['still red'], code: 2 })
       // Blocks 1..7 each continue the conversation.
-      for (let i = 0; i < 7; i += 1) await ext.agentEnd()
-      expect(ext.sent).toHaveLength(7)
+      for (let i = 0; i < 7; i += 1) await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(7)
       // The 8th consecutive block is suppressed: no continuation, a warning instead, and
       // the turn is allowed to end.
-      await ext.agentEnd()
-      expect(ext.sent).toHaveLength(7)
+      await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(7)
       expect(ext.notes.some((n) => n.level === 'warning' && /cap/i.test(n.msg))).toBe(true)
     })
 
@@ -1675,10 +1711,10 @@ describe('hooks extension notify-style events', () => {
       try {
         const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
         script('keep-going', { stderr: ['nope'], code: 2 })
-        await ext.agentEnd() // block 1 continues
-        expect(ext.sent).toHaveLength(1)
-        await ext.agentEnd() // block 2 hits the cap: suppressed
-        expect(ext.sent).toHaveLength(1)
+        await ext.agentBeforeSettle() // block 1 continues
+        expect(ext.continued).toHaveLength(1)
+        await ext.agentBeforeSettle() // block 2 hits the cap: suppressed
+        expect(ext.continued).toHaveLength(1)
         expect(ext.notes.some((n) => /cap/i.test(n.msg))).toBe(true)
       } finally {
         if (saved === undefined) delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
@@ -1689,41 +1725,41 @@ describe('hooks extension notify-style events', () => {
     it('resets the streak on a non-blocking Stop result so a later block continues again', async () => {
       const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
       script('keep-going', { stderr: ['red'], code: 2 })
-      for (let i = 0; i < 7; i += 1) await ext.agentEnd()
-      expect(ext.sent).toHaveLength(7)
+      for (let i = 0; i < 7; i += 1) await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(7)
       // A clean stop breaks the streak...
       script('keep-going', { code: 0, stderr: [] })
-      await ext.agentEnd()
-      expect(ext.sent).toHaveLength(7)
+      await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(7)
       // ...so the next block continues rather than tripping the cap at the 8th call.
       script('keep-going', { stderr: ['red again'], code: 2 })
-      await ext.agentEnd()
-      expect(ext.sent).toHaveLength(8)
+      await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(8)
     })
 
     it('resets the streak on genuine user input', async () => {
       const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
       script('keep-going', { stderr: ['red'], code: 2 })
-      for (let i = 0; i < 7; i += 1) await ext.agentEnd()
-      expect(ext.sent).toHaveLength(7)
+      for (let i = 0; i < 7; i += 1) await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(7)
       // User input breaks the streak, so the next block continues rather than capping.
       await ext.input('keep working on it')
-      await ext.agentEnd()
-      expect(ext.sent).toHaveLength(8)
+      await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(8)
     })
 
     it('does not reset the Stop streak on an extension-sourced input', async () => {
       const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
       script('keep-going', { stderr: ['red'], code: 2 })
-      for (let i = 0; i < 7; i += 1) await ext.agentEnd()
-      expect(ext.sent).toHaveLength(7)
+      for (let i = 0; i < 7; i += 1) await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(7)
       // An extension-injected message (plan mode, subagent) is not user progress, so the
       // input handler returns before touching the streak. Without that source guard the
       // count would reset and the cap could never fire in production: the 8th block still
       // trips the cap, so nothing more is sent and the warning stands.
       await ext.input('injected', 'extension')
-      await ext.agentEnd()
-      expect(ext.sent).toHaveLength(7)
+      await ext.agentBeforeSettle()
+      expect(ext.continued).toHaveLength(7)
       expect(ext.notes.some((n) => n.level === 'warning' && /cap/i.test(n.msg))).toBe(true)
     })
 
@@ -1734,17 +1770,17 @@ describe('hooks extension notify-style events', () => {
       // which resets both so the next Stop reports stop_hook_active false.
       const ext = await withHooks({ Stop: [{ hooks: [{ command: 'keep-going' }] }] })
       script('keep-going', { stderr: ['not done'], code: 2 })
-      await ext.agentEnd() // first block: continues and arms stop_hook_active for the next firing
-      expect(ext.sent).toHaveLength(1)
+      await ext.agentBeforeSettle() // first block: continues and arms stop_hook_active for the next firing
+      expect(ext.continued).toHaveLength(1)
 
       await ext.sessionStart('new', { cwd: tempDir('hooks-proj-') })
 
       script('keep-going', { stderr: ['still red'], code: 2 })
-      await ext.agentEnd()
+      await ext.agentBeforeSettle()
       const calls = hoisted.calls.filter((call) => call.command === 'keep-going')
       // The post-reset firing reports stop_hook_active false, not the true carried from before.
       expect(JSON.parse(calls[calls.length - 1].stdin).stop_hook_active).toBe(false)
-      expect(ext.sent).toHaveLength(2) // the count reset too, so this block still continues
+      expect(ext.continued).toHaveLength(2) // the count reset too, so this block still continues
     })
   })
 
@@ -1762,7 +1798,7 @@ describe('hooks extension notify-style events', () => {
     await ext.toolCall('bash', {})
     await ext.toolResult('bash')
     await ext.input('hello')
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     await ext.beforeCompact('manual')
     expect(ext.notes).toEqual(Array(5).fill({ msg: 'heads up', level: 'warning' }))
   })
@@ -1809,10 +1845,10 @@ describe('hooks extension notify-style events', () => {
     // block with or without the timed-out filter, so only this shape proves the filter.
     script('hung', { stdout: [JSON.stringify({ decision: 'block', reason: 'not yet' })], hang: true })
     vi.useFakeTimers()
-    const pending = ext.agentEnd()
+    const pending = ext.agentBeforeSettle()
     await vi.advanceTimersByTimeAsync(1500)
     await pending
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
   })
 
   it('names the blocking PreCompact hook, not the if-carrying one that was skipped before it', async () => {
@@ -1888,11 +1924,11 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
 
   it('does not hold the turn open for a Stop hook marked async', async () => {
     // Claude runs `async: true` hooks in the background without blocking; awaiting one
-    // is the freeze in #123, so agent_end must settle while the hook still runs.
+    // is the freeze in #123, so agent_before_settle must return while it still runs.
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'monitor', async: true, timeout: 28800 }] }] })
     script('monitor', { hang: true })
     let ended = false
-    const pending = ext.agentEnd().then(() => {
+    const pending = ext.agentBeforeSettle().then(() => {
       ended = true
     })
     await drain()
@@ -1900,20 +1936,20 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
     await pending
     // Backgrounded, not skipped: the hook itself must still have been spawned.
     expect(commandsRun()).toEqual(['monitor'])
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
   })
 
   it('does not hold the turn open for a Stop hook marked asyncRewake', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'monitor', asyncRewake: true, timeout: 28800 }] }] })
     script('monitor', { hang: true })
     let ended = false
-    const pending = ext.agentEnd().then(() => {
+    const pending = ext.agentBeforeSettle().then(() => {
       ended = true
     })
     await drain()
     expect(ended).toBe(true)
     await pending
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
   })
 
   it('honors a synchronous Stop block without waiting for a hung async sibling', async () => {
@@ -1921,19 +1957,19 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
     script('monitor', { hang: true })
     script('guard', { stderr: ['not done'], code: 2 })
     let ended = false
-    const pending = ext.agentEnd().then(() => {
+    const pending = ext.agentBeforeSettle().then(() => {
       ended = true
     })
     await drain()
     expect(ended).toBe(true)
     await pending
-    expect(ext.sent).toEqual([{ message: { customType: 'claude-stop-hook', content: 'not done', display: true }, options: { triggerTurn: true } }])
+    expect(ext.continued).toEqual([{ entries: [{ type: 'custom_message', customType: 'claude-stop-hook', content: 'not done', display: true }], continue: true }])
   })
 
   it('wakes pi with stderr when an asyncRewake hook exits 2, not with a stop-block continuation', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'monitor', asyncRewake: true }] }] })
     script('monitor', { stderr: ['deploy went red'], code: 2 })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     await drain()
     expect(ext.sent).toEqual([{ message: { customType: 'claude-async-hook', content: expect.stringContaining('deploy went red'), display: true }, options: { triggerTurn: true } }])
   })
@@ -1941,9 +1977,9 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
   it('does not treat a background exit 2 as a Stop block for the next firing', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'monitor', asyncRewake: true }] }] })
     script('monitor', { stderr: ['deploy went red'], code: 2 })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     await drain()
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     const second = hoisted.calls.filter((call) => call.command === 'monitor')[1]
     expect(JSON.parse(second.stdin).stop_hook_active).toBe(false)
   })
@@ -1968,7 +2004,7 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
   it('delivers a background systemMessage and additionalContext to the model on the next turn, invisible to the user', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'reporter', async: true }] }] })
     script('reporter', { stdout: [JSON.stringify({ systemMessage: 'heads up', hookSpecificOutput: { additionalContext: 'tests are green' } })], code: 0 })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     await drain()
     expect(ext.sent).toEqual([{ message: { customType: 'claude-async-hook', content: 'heads up\ntests are green', display: false }, options: { deliverAs: 'nextTurn' } }])
     expect(ext.notes).toEqual([])
@@ -1978,11 +2014,11 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'late', asyncRewake: true, timeout: 1 }] }] })
     script('late', { stdout: [JSON.stringify({ systemMessage: 'late news' })], hang: true })
     vi.useFakeTimers()
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     await vi.advanceTimersByTimeAsync(1500)
     vi.useRealTimers()
     await drain()
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
   })
 
   // Claude: "In non-interactive mode with the -p flag, Claude Code kills any async hook still
@@ -1992,7 +2028,7 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
     // Without this a hung background hook pins the event loop past a one-shot run's end.
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'monitor', async: true }] }] })
     script('monitor', { hang: true })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     expect(recordFor('monitor').killSignals).toEqual([])
     await ext.shutdown('quit', { hasUI: false })
     expect(recordFor('monitor').killSignals).toEqual(['SIGKILL'])
@@ -2001,7 +2037,7 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
   it('leaves a background hook running when an interactive session ends', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'monitor', async: true }] }] })
     script('monitor', { hang: true })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     await ext.shutdown('quit', { hasUI: true })
     expect(recordFor('monitor').killSignals).toEqual([])
   })
@@ -2633,8 +2669,8 @@ describe('Claude vocabulary and decision-control conformance', () => {
   it('continues the conversation on a Stop hook additionalContext without an error verdict', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'nudge' }] }] })
     script('nudge', { stdout: [JSON.stringify({ hookSpecificOutput: { additionalContext: 'Please run the test suite before finishing.' } })], code: 0 })
-    await ext.agentEnd()
-    expect(ext.sent).toEqual([{ message: { customType: 'claude-stop-hook', content: 'Please run the test suite before finishing.', display: true }, options: { triggerTurn: true } }])
+    await ext.agentBeforeSettle()
+    expect(ext.continued).toEqual([{ entries: [{ type: 'custom_message', customType: 'claude-stop-hook', content: 'Please run the test suite before finishing.', display: true }], continue: true }])
   })
 
   it('blocks a deferred tool call instead of running it, and ends the run', async () => {
@@ -2669,7 +2705,7 @@ describe('Claude vocabulary and decision-control conformance', () => {
   it('never runs an if-carrying hook on a non-tool event', async () => {
     // Claude: "On other events, a hook with `if` set never runs."
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopper', if: 'Bash(git *)' }] }] })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     expect(commandsRun()).toEqual([])
   })
 
@@ -2677,7 +2713,7 @@ describe('Claude vocabulary and decision-control conformance', () => {
     // Claude: "If you add a matcher field to an event without matcher support, it
     // is silently ignored."
     const ext = await withHooks({ Stop: [{ matcher: 'SomethingElse', hooks: [{ command: 'stopped' }] }] })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     expect(commandsRun()).toEqual(['stopped'])
   })
 })
@@ -2694,8 +2730,8 @@ describe('prompt-style decisions on Stop and PostToolUse', () => {
     // A type: "prompt"/"agent" hook's reply arrives as stdout in this shape.
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'gate' }] }] })
     script('gate', { stdout: [JSON.stringify({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'tests are red' } })], code: 0 })
-    await ext.agentEnd()
-    expect(ext.sent).toEqual([{ message: { customType: 'claude-stop-hook', content: 'tests are red', display: true }, options: { triggerTurn: true } }])
+    await ext.agentBeforeSettle()
+    expect(ext.continued).toEqual([{ entries: [{ type: 'custom_message', customType: 'claude-stop-hook', content: 'tests are red', display: true }], continue: true }])
   })
 
   it('blocks the stop on the documented prompt-hook ok:false schema', async () => {
@@ -2703,8 +2739,8 @@ describe('prompt-style decisions on Stop and PostToolUse', () => {
     // is fed back and the turn continues.
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'gate' }] }] })
     script('gate', { stdout: [JSON.stringify({ ok: false, reason: 'not done yet' })], code: 0 })
-    await ext.agentEnd()
-    expect(ext.sent).toEqual([{ message: { customType: 'claude-stop-hook', content: 'not done yet', display: true }, options: { triggerTurn: true } }])
+    await ext.agentBeforeSettle()
+    expect(ext.continued).toEqual([{ entries: [{ type: 'custom_message', customType: 'claude-stop-hook', content: 'not done yet', display: true }], continue: true }])
   })
 
   it('feeds an ok:false PostToolUse verdict back as feedback next to the result', async () => {
@@ -2727,13 +2763,13 @@ describe('hooks polish: interrupts, timeout defaults, prompt-hook contract', () 
     // Claude: Stop "does not run if the stoppage occurred due to a user interrupt";
     // pi marks the aborted turn's final assistant message stopReason "aborted".
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopper' }] }] })
-    await ext.agentEnd([{ role: 'assistant', content: [{ type: 'text', text: 'partial' }], stopReason: 'aborted' }])
+    await ext.agentBeforeSettle([{ role: 'assistant', content: [{ type: 'text', text: 'partial' }], stopReason: 'aborted' }], 'aborted')
     expect(commandsRun()).toEqual([])
   })
 
   it('still runs Stop hooks for a normally completed turn', async () => {
     const ext = await withHooks({ Stop: [{ hooks: [{ command: 'stopper' }] }] })
-    await ext.agentEnd([{ role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }])
+    await ext.agentBeforeSettle([{ role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }])
     expect(commandsRun()).toEqual(['stopper'])
   })
 
@@ -3088,9 +3124,9 @@ describe('hooks suppressOriginalPrompt', () => {
     const ext = setupExtension()
     await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
 
-    await ext.agentEnd([{ role: 'assistant', content: 'done' }])
+    await ext.agentBeforeSettle([{ role: 'assistant', content: 'done' }])
 
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
     expect(ext.notes.at(-1)?.msg).toContain('budget spent')
   })
 
@@ -3101,9 +3137,9 @@ describe('hooks suppressOriginalPrompt', () => {
     const ext = setupExtension()
     await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
 
-    await ext.agentEnd([{ role: 'assistant', content: 'done' }])
+    await ext.agentBeforeSettle([{ role: 'assistant', content: 'done' }])
 
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
   })
 
   it('honors continue:false over a Stop hook decision, showing its stopReason', async () => {
@@ -3115,9 +3151,9 @@ describe('hooks suppressOriginalPrompt', () => {
     const ext = setupExtension()
     await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
 
-    await ext.agentEnd([{ role: 'assistant', content: 'done' }])
+    await ext.agentBeforeSettle([{ role: 'assistant', content: 'done' }])
 
-    expect(ext.sent).toEqual([])
+    expect(ext.continued).toEqual([])
     expect(ext.notes.at(-1)?.msg).toContain('budget spent')
   })
 
@@ -3308,7 +3344,7 @@ describe('user-level hooks inside a subagent child', () => {
     writeSettings(hoisted.home, 'settings.json', { Stop: [{ hooks: [{ command: 'user-stop' }] }], SessionEnd: [{ hooks: [{ command: 'user-session-end' }] }] })
     const ext = setupExtension()
     await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    await ext.agentEnd()
+    await ext.agentBeforeSettle()
     await ext.shutdown('quit')
 
     expect(commandsRun()).toEqual(['user-stop', 'user-session-end'])
