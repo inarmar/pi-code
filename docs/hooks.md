@@ -2,7 +2,7 @@
 
 The Hooks extension translates Claude Code hook declarations from user, managed and **Pi-trusted** project `.claude/settings.json` (including local overrides), and from `hooks` frontmatter in explicitly invoked Pi skills.
 
-Hook types: shell command, HTTP POST and model-evaluated prompt; legacy `mcp_tool` hook dispatch is available only if an external caller is wired in. This package does **not** connect MCP servers.
+Hook types: shell command, HTTP POST and model-evaluated prompt. Unsupported `mcp_tool` and `agent` hook entries are ignored. This package does **not** connect MCP servers or launch subagents.
 
 The integration covers `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd`, `PreCompact`, `PostCompact`, `Notification` and `PostModelSwitch`, subject to available Pi events. `InstructionsLoaded` requires a separate instructions extension and is not emitted by this package.
 

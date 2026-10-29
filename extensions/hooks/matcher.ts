@@ -86,14 +86,10 @@ function matcherApplies(matcher: string | undefined, names: readonly string[]): 
   return names.some((name) => tokens.has(foldName(name)))
 }
 
-/** A hook entry pi-code can run: a shell command, an http POST, an in-process
- * prompt, an mcp_tool call, or an agent subagent. An agent hook with no runner
- * registered is still matched here and resolves non-blocking at run time, the same
- * way a prompt hook with no model does. */
+/** A hook entry pi-code can run: command, HTTP POST, or model-evaluated prompt. */
 function isRunnableHook(hook: HookCommand): boolean {
   if (hook.type === 'http') return typeof hook.url === 'string' && /^https?:\/\//.test(hook.url)
-  if (hook.type === 'prompt' || hook.type === 'agent') return typeof hook.prompt === 'string' && hook.prompt.length > 0
-  if (hook.type === 'mcp_tool') return typeof hook.server === 'string' && typeof hook.tool === 'string'
+  if (hook.type === 'prompt') return typeof hook.prompt === 'string' && hook.prompt.length > 0
   // A command hook needs a non-empty command, and exec-form args must all be strings:
   // spawn('') throws ERR_INVALID_ARG_VALUE and a number has no replaceAll for argument
   // substitution, both inside the runner's Promise executor, so the event's handler
@@ -103,13 +99,12 @@ function isRunnableHook(hook: HookCommand): boolean {
   return hook.type === undefined || hook.type === 'command'
 }
 
-/** The synthetic identity of a non-shell hook entry: an http/prompt/agent/mcp_tool
- * entry has no `command`, so its url / prompt / server:tool stands in. A shell hook
+/** The synthetic identity of a non-shell hook entry: an http/prompt
+ * entry has no `command`, so its url or prompt stands in. A shell hook
  * (undefined or `command` type) already has one, so this is undefined. */
 function syntheticCommand(hook: HookCommand): string | undefined {
   if (hook.type === 'http') return hook.url
-  if (hook.type === 'prompt' || hook.type === 'agent') return hook.prompt
-  if (hook.type === 'mcp_tool') return `${hook.server}:${hook.tool}`
+  if (hook.type === 'prompt') return hook.prompt
   return undefined
 }
 

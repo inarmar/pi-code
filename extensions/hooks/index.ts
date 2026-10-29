@@ -101,7 +101,7 @@ import { claudeToolInput, claudeToolName, claudeToolResponse, piToolOutput } fro
 import { formatHooksSummary, type HookCommand, type HookMatcher, type HooksConfig, hookFiles, isBackgroundHook, loadHooks, loadManagedHooks, mergeSkillHooks, readAllowedHttpHookUrls, readDisableAllHooks, readSettingsDisableAllHooks } from './config.ts'
 import { blockedToolCall, type HookDecision, jsonBlockVerdict, postToolFeedback, promptContext, runPreToolUse, runUserPromptSubmit, surfaceSystemMessages, tryParseJson } from './decisions.ts'
 import { allCommands, matchingCommands, passesIfFilter } from './matcher.ts'
-import { type HookRunner, type HookRunResult, runHookCommand, runHttpHook, runMcpToolHook, runPromptHook, sessionEndTimeoutMs, timeoutMs } from './runners.ts'
+import { type HookRunner, type HookRunResult, runHookCommand, runHttpHook, runPromptHook, sessionEndTimeoutMs, timeoutMs } from './runners.ts'
 
 export * from './config.ts'
 export * from './decisions.ts'
@@ -325,8 +325,6 @@ export default function hooksExtension(pi: ExtensionAPI) {
   const dispatchHook = (ctx: ExtensionContext, hook: HookCommand, merged: Record<string, unknown>, ms: number, onChild?: (kill: () => void) => void): Promise<HookRunResult> => {
     if (hook.type === 'http') return runHttpHook(hook, merged, ms, allowedHttpHookUrls)
     if (hook.type === 'prompt') return runPromptHook(hook, merged, resolveHookModel(ctx, hook.model), ms, ctx.modelRegistry)
-    if (hook.type === 'agent') return Promise.resolve({ code: 1, stdout: '', stderr: 'Subagent hook type is not supported', timedOut: false })
-    if (hook.type === 'mcp_tool') return runMcpToolHook(hook, merged, ms)
     return runHookCommand(hook.command, merged, ms, { projectDir, args: hook.args, onChild, shell: hook.shell, plugin: hook.pluginRoot !== undefined && hook.pluginDataDir !== undefined ? { root: hook.pluginRoot, dataDir: hook.pluginDataDir } : undefined, sessionId: merged.session_id as string | undefined })
   }
   /** A runner bound to the firing context, filling the common fields into each

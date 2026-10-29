@@ -21,12 +21,10 @@ import {
   resetMatcherCache,
   runHookCommand,
   runHttpHook,
-  runMcpToolHook,
   runPreToolUse,
   runPromptHook,
   stopHookBlockCap,
 } from '../extensions/hooks/index.ts'
-import { setMcpToolCaller } from '../extensions/internal/mcp-call.ts'
 import { setCompleteBackend } from '../extensions/internal/model-complete.ts'
 
 const tempDir = (): string => mkdtempSync(join(tmpdir(), 'hooks-'))
@@ -154,110 +152,6 @@ describe('lastAssistantText', () => {
   })
 })
 
-describe('runMcpToolHook', () => {
-  it('fails a PreToolUse tool call closed when an http or mcp_tool guard times out', async () => {
-    // pi-code fails a timed-out PreToolUse hook closed because there is no permission
-    // prompt to fall back on. That reasoning does not depend on the hook's type: a guard
-    // that never answered has not allowed anything, whichever transport it used.
-    // A server that accepts and never answers: a refused port would fail instantly for a
-    // different reason, which is not the case under test.
-    const hanging = createServer(() => {})
-    await new Promise<void>((resolve) => hanging.listen(0, '127.0.0.1', () => resolve()))
-    const port = (hanging.address() as { port: number }).port
-    try {
-      const timedOutHttp = await runHttpHook({ command: 'http', url: `http://127.0.0.1:${port}/hook` }, {}, 20)
-      expect(timedOutHttp.timedOut).toBe(true)
-    } finally {
-      hanging.close()
-    }
-
-    // A caller that never settles, so the deadline decides rather than an instant
-    // rejection from a server that is not registered.
-    const { setMcpToolCaller } = await import('../extensions/internal/mcp-call.ts')
-    setMcpToolCaller(() => new Promise(() => {}))
-    try {
-      const timedOutMcp = await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'srv', tool: 'check' } as never, {}, 5)
-      expect(timedOutMcp.timedOut).toBe(true)
-    } finally {
-      setMcpToolCaller(undefined)
-    }
-  })
-
-  afterEach(() => setMcpToolCaller(undefined))
-
-  it('calls the named server tool and returns its text as stdout', async () => {
-    let seen: unknown
-    setMcpToolCaller(async (server, tool, input) => {
-      seen = { server, tool, input }
-      return { text: 'server says ok', isError: false }
-    })
-    const result = await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'gh', tool: 'lint', input: { strict: true } }, { hook_event_name: 'PreToolUse' }, 5000)
-    expect(result).toMatchObject({ code: 0, stdout: 'server says ok', timedOut: false })
-    expect(seen).toEqual({ server: 'gh', tool: 'lint', input: { strict: true } })
-  })
-
-  it('calls with no arguments when the hook declares no input, per the documented field', async () => {
-    // Claude's `input` field is optional: without it the tool is called with no
-    // arguments, not handed the whole event payload.
-    let seenInput: unknown
-    setMcpToolCaller(async (_s, _t, input) => {
-      seenInput = input
-      return { text: '', isError: false }
-    })
-    await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'gh', tool: 'lint' }, { hook_event_name: 'PreToolUse', tool_name: 'bash' }, 5000)
-    expect(seenInput).toEqual({})
-  })
-
-  it('substitutes ${path} references from the hook JSON input into string values', async () => {
-    // Claude: "String values support ${path} substitution from the hook's JSON
-    // input, such as ${tool_input.file_path}".
-    let seenInput: unknown
-    setMcpToolCaller(async (_s, _t, input) => {
-      seenInput = input
-      return { text: '', isError: false }
-    })
-    const payload = { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: '/src/a.ts' } }
-    const input = { file_path: '${tool_input.file_path}', label: 'checked ${tool_name}', nested: { p: '${tool_input.file_path}' } }
-    await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'gh', tool: 'scan', input }, payload, 5000)
-    expect(seenInput).toEqual({ file_path: '/src/a.ts', label: 'checked Edit', nested: { p: '/src/a.ts' } })
-  })
-
-  it('leaves a ${path} that resolves to nothing as literal text', async () => {
-    let seenInput: unknown
-    setMcpToolCaller(async (_s, _t, input) => {
-      seenInput = input
-      return { text: '', isError: false }
-    })
-    await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'gh', tool: 'scan', input: { x: '${no.such.path}' } }, { hook_event_name: 'PreToolUse' }, 5000)
-    expect(seenInput).toEqual({ x: '${no.such.path}' })
-  })
-
-  it('clears its deadline timer once the call settles instead of pinning the event loop', async () => {
-    // The unclosed 60s deadline timer kept a one-shot headless run alive for the
-    // full timeout after the call had long resolved.
-    vi.useFakeTimers()
-    try {
-      setMcpToolCaller(async () => ({ text: 'ok', isError: false }))
-      await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'gh', tool: 'lint' }, {}, 60_000)
-      expect(vi.getTimerCount()).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('is non-blocking on a server error, a missing caller, or missing fields', async () => {
-    setMcpToolCaller(async () => ({ text: 'boom', isError: true }))
-    const errored = await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'gh', tool: 'lint' }, {}, 5000)
-    expect(errored).toMatchObject({ code: 1, timedOut: false })
-    setMcpToolCaller(undefined)
-    const noCaller = await runMcpToolHook({ type: 'mcp_tool', command: '', server: 'gh', tool: 'lint' }, {}, 5000)
-    expect(noCaller.timedOut).toBe(false)
-    expect(noCaller.code).not.toBe(0)
-    const noFields = await runMcpToolHook({ type: 'mcp_tool', command: '' }, {}, 5000)
-    expect(noFields.code).not.toBe(0)
-  })
-})
-
 describe('hookFiles', () => {
   it('always includes user settings and adds project settings only when trusted', () => {
     expect(hookFiles('/proj', '/home', false)).toEqual([join('/home', '.claude', 'settings.json')])
@@ -354,7 +248,6 @@ describe('formatHooksSummary', () => {
     const preB = {
       hooks: [
         { type: 'http', url: 'https://ci.example/hook' },
-        { type: 'mcp_tool', server: 'gh', tool: 'lint' },
       ],
     }
     const stop = { matcher: '*', hooks: [{ type: 'prompt', prompt: 'done yet?' }] }
@@ -364,14 +257,14 @@ describe('formatHooksSummary', () => {
       [preB, '/proj/.claude/settings.json'],
     ])
 
-    expect(formatHooksSummary(config as never, sources as never)).toBe(['PreToolUse:', '  [Bash] command: guard.sh (/home/.claude/settings.json)', '  [*] http: https://ci.example/hook (/proj/.claude/settings.json)', '  [*] mcp_tool: gh:lint (/proj/.claude/settings.json)', 'Stop:', '  [*] prompt: done yet?'].join('\n'))
+    expect(formatHooksSummary(config as never, sources as never)).toBe(['PreToolUse:', '  [Bash] command: guard.sh (/home/.claude/settings.json)', '  [*] http: https://ci.example/hook (/proj/.claude/settings.json)', 'Stop:', '  [*] prompt: done yet?'].join('\n'))
   })
 
-  it('shows an agent hook by its prompt and a typeless entry as a command', () => {
+  it('shows a prompt hook and a typeless entry as a command', () => {
     const text = formatHooksSummary({
-      Stop: [{ hooks: [{ type: 'agent', prompt: 'verify the tests ran' }, { command: 'notify.sh' }] }],
+      Stop: [{ hooks: [{ type: 'prompt', prompt: 'verify the tests ran' }, { command: 'notify.sh' }] }],
     } as never)
-    expect(text).toContain('  [*] agent: verify the tests ran')
+    expect(text).toContain('  [*] prompt: verify the tests ran')
     expect(text).toContain('  [*] command: notify.sh')
   })
 

@@ -7,7 +7,6 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import type { Api, Model } from '@earendil-works/pi-ai'
-import { callMcpTool } from '../internal/mcp-call.ts'
 import { type CompletionRegistry, completeText } from '../internal/model-complete.ts'
 import { killProcessTree } from '../internal/process-tree.ts'
 import { resolveShell } from '../internal/shell-resolve.ts'
@@ -320,61 +319,5 @@ export async function runPromptHook(hook: HookCommand, payload: unknown, model: 
     return { code: 0, stdout: answer, stderr: '', timedOut: false }
   } catch (error) {
     return abortAwareFailure(signal, error)
-  }
-}
-
-/** A dotted path into the hook's JSON input, or undefined when any step is missing. */
-function lookupPath(payload: unknown, dotted: string): unknown {
-  let current: unknown = payload
-  for (const key of dotted.split('.')) {
-    if (current === null || typeof current !== 'object') return undefined
-    current = (current as Record<string, unknown>)[key]
-  }
-  return current
-}
-
-/** Claude's ${path} substitution for mcp_tool input: string values may reference the
- * hook's JSON input, such as ${tool_input.file_path}. Arrays and nested objects are
- * walked; an unresolvable path stays literal; non-string looked-up values are
- * JSON-encoded into the string. */
-function substituteInputPaths(value: unknown, payload: unknown): unknown {
-  if (typeof value === 'string') {
-    return value.replace(/\$\{([\w.]+)\}/g, (matchText, dotted: string) => {
-      const found = lookupPath(payload, dotted)
-      if (found === undefined) return matchText
-      return typeof found === 'string' ? found : JSON.stringify(found)
-    })
-  }
-  if (Array.isArray(value)) return value.map((entry) => substituteInputPaths(entry, payload))
-  if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, substituteInputPaths(entry, payload)]))
-  return value
-}
-
-/**
- * Claude's `type: "mcp_tool"` hook: call a tool on an already-connected MCP server
- * and treat its text output like command stdout. pi reaches the server through the
- * mcp-call seam the mcp extension registers. Like http, a missing server or a tool
- * error is non-blocking, and the deadline reports `timedOut`, so a gated event fails
- * closed on it.
- */
-export async function runMcpToolHook(hook: HookCommand, payload: unknown, timeoutMs: number): Promise<HookRunResult> {
-  if (!hook.server || !hook.tool) return { code: 1, stdout: '', stderr: 'mcp_tool hook needs server and tool', timedOut: false }
-  // Claude: `input` is the arguments passed to the tool; without it the tool is
-  // called with no arguments, never handed the whole event payload.
-  const input = hook.input && typeof hook.input === 'object' ? (substituteInputPaths(hook.input, payload) as Record<string, unknown>) : {}
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<HookRunResult>((resolve) => {
-    // Marked as a timeout so a gated event fails closed on it, like a command hook.
-    timer = setTimeout(() => resolve({ code: 1, stdout: '', stderr: `mcp_tool hook timed out after ${timeoutMs}ms`, timedOut: true }), timeoutMs)
-  })
-  const call = callMcpTool(hook.server, hook.tool, input)
-    .then((result): HookRunResult => ({ code: result.isError ? 1 : 0, stdout: result.text, stderr: '', timedOut: false }))
-    .catch((error): HookRunResult => ({ code: 1, stdout: '', stderr: errorMessage(error), timedOut: false }))
-  try {
-    return await Promise.race([call, deadline])
-  } finally {
-    // Left running, the deadline timer pins the event loop for the full timeout
-    // after the call resolves, delaying exit in a one-shot headless run.
-    clearTimeout(timer)
   }
 }

@@ -42,10 +42,6 @@ export interface HookCommand {
   allowedEnvVars?: string[]
   /** prompt entries: the prompt sent to the model (`$ARGUMENTS` = the event JSON). */
   prompt?: string
-  /** mcp_tool entries: the connected server and tool to call, with optional input. */
-  server?: string
-  tool?: string
-  input?: Record<string, unknown>
   /** prompt/agent entries: an optional model override; agent adds a system prompt. */
   model?: string
   systemPrompt?: string
@@ -237,8 +233,7 @@ function hookIdentity(hook: HookCommand | null | undefined): string {
   const record: Partial<HookCommand> = hook ?? {}
   const type = record.type ?? 'command'
   if (type === 'http') return `http: ${record.url ?? record.command ?? '(missing url)'}`
-  if (type === 'prompt' || type === 'agent') return `${type}: ${record.prompt ?? record.command ?? '(missing prompt)'}`
-  if (type === 'mcp_tool') return `mcp_tool: ${record.server ?? '(missing server)'}:${record.tool ?? '(missing tool)'}`
+  if (type === 'prompt') return `prompt: ${record.prompt ?? record.command ?? '(missing prompt)'}`
   return `command: ${record.command ?? '(missing command)'}`
 }
 

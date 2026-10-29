@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import hooksExtension, { type HookRunner, interpretHookResult, isBackgroundHook, loadHooks, matchingCommands, runHookCommand, runPreToolUse, runPromptHook, runUserPromptSubmit, sessionEndTimeoutMs, timeoutMs } from '../extensions/hooks/index.ts'
 import { setManagedSettingsPath } from '../extensions/internal/managed-settings.ts'
-import { setMcpToolCaller } from '../extensions/internal/mcp-call.ts'
 import { setCompleteBackend } from '../extensions/internal/model-complete.ts'
 import { makeWorktree } from './worktree-fixture.ts'
 
@@ -476,9 +475,8 @@ describe('hook timeout configuration', () => {
 })
 
 describe('non-command hook types', () => {
-  it('runs command, prompt, and agent hooks but skips entries missing their required fields', async () => {
-    // prompt and agent hooks run with their prompt mirrored into `command`; an agent
-    // hook with no prompt, or an mcp_tool hook missing its tool, is dropped.
+  it('runs command and prompt hooks but rejects unsupported agent and MCP hooks', async () => {
+    // Unsupported agent and MCP hook types must never execute.
     const seen: string[] = []
     const runner: HookRunner = async (command) => {
       seen.push(command.command)
@@ -493,9 +491,7 @@ describe('non-command hook types', () => {
     }
     const decision = await runPreToolUse(config, 'bash', {}, runner)
     expect(decision).toEqual({ block: false })
-    // 'verify this' is the agent hook's mirrored identity; the promptless agent and
-    // the fieldless mcp_tool hooks are absent.
-    expect(seen).toEqual(['judge this', 'real-hook', 'verify this', 'typed-hook'])
+    expect(seen).toEqual(['judge this', 'real-hook', 'typed-hook'])
   })
 })
 
@@ -643,8 +639,8 @@ describe('matchingCommands edge shapes', () => {
     ]
     expect(matchingCommands(filtered, 'bash').map((hook) => hook.if)).toEqual(['Bash(git *)', 'Bash(npm *)'])
 
-    const mcpTools = [{ matcher: 'Bash', hooks: [{ type: 'mcp_tool', server: 's', tool: 't', input: { level: 'a' } } as never, { type: 'mcp_tool', server: 's', tool: 't', input: { level: 'b' } } as never] }]
-    expect(matchingCommands(mcpTools, 'bash')).toHaveLength(2)
+    const unsupported = [{ matcher: 'Bash', hooks: [{ type: 'mcp_tool', server: 's', tool: 't' } as never, { type: 'agent', prompt: 'run child' } as never] }]
+    expect(matchingCommands(unsupported, 'bash')).toHaveLength(0)
   })
 
   it('falls back to case-insensitive literal equality when the matcher is an invalid regex', () => {
@@ -1922,7 +1918,7 @@ describe('background hooks (Claude async/asyncRewake contract, #123)', () => {
     expect(isBackgroundHook({ command: 'x', async: true })).toBe(true)
     expect(isBackgroundHook({ type: 'command', command: 'x', asyncRewake: true })).toBe(true)
     expect(isBackgroundHook({ command: 'x' })).toBe(false)
-    for (const type of ['http', 'prompt', 'mcp_tool']) {
+    for (const type of ['http', 'prompt']) {
       expect(isBackgroundHook({ type, command: 'x', async: true, asyncRewake: true })).toBe(false)
     }
   })
@@ -2360,10 +2356,9 @@ describe('hooks polish: interrupts, timeout defaults, prompt-hook contract', () 
   })
 
   it('gives prompt hooks the documented 30s default and keeps command hooks at the noted 60s', () => {
-    // Claude defaults: 30 for prompt, 60 for agent; the 60s command default is
+    // Claude defaults: 30 for prompt; the 60s command default is
     // pi-code's documented fail-closed divergence from Claude's 600.
     expect(timeoutMs({ command: 'x', type: 'prompt' })).toBe(30_000)
-    expect(timeoutMs({ command: 'x', type: 'agent' })).toBe(60_000)
     expect(timeoutMs({ command: 'x' })).toBe(60_000)
   })
 
@@ -2951,38 +2946,6 @@ describe('settings watching', () => {
     } finally {
       delete process.env.PI_CODE_SETTINGS_WATCH_INTERVAL_MS
     }
-  })
-})
-
-describe('mcp_tool hook dispatch', () => {
-  afterEach(() => setMcpToolCaller(undefined))
-
-  it('routes a configured mcp_tool hook through the dispatcher to the caller seam', async () => {
-    // The type === 'mcp_tool' dispatch arm had no end-to-end path: config ->
-    // matcher -> boundRunner -> runMcpToolHook -> the seam, with the tool's
-    // verdict feeding the decision like any command hook's stdout.
-    const calls: Array<[string, string, Record<string, unknown>]> = []
-    setMcpToolCaller(async (server, tool, input) => {
-      calls.push([server, tool, input])
-      return { text: JSON.stringify({ decision: 'block', reason: 'mcp guard says no' }), isError: false }
-    })
-    writeSettings(hoisted.home, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'mcp_tool', server: 'guard-srv', tool: 'vet', input: { command: '${tool_input.command}' } }] }] })
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-    const decision = (await ext.toolCall('bash', { command: 'rm -rf /' })) as { block: boolean; reason?: string }
-
-    expect(calls).toEqual([['guard-srv', 'vet', { command: 'rm -rf /' }]])
-    expect(decision?.block).toBe(true)
-    expect(decision?.reason).toContain('mcp guard says no')
-  })
-
-  it('lets the tool proceed when the mcp_tool hook returns no verdict', async () => {
-    setMcpToolCaller(async () => ({ text: 'all fine', isError: false }))
-    writeSettings(hoisted.home, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'mcp_tool', server: 'guard-srv', tool: 'vet' }] }] })
-    const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: tempDir('hooks-proj-') })
-
-    expect(await ext.toolCall('bash', { command: 'ls' })).toBeUndefined()
   })
 })
 
