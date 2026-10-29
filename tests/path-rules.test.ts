@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { compileGlobs, globCompileStats, globToRegExpSource, matchesCompiledGlobs, matchesPathRules, stripRuleDrive } from '../extensions/internal/path-rules.ts'
+import { compileGlobs, globCompileStats, globToRegExpSource, matchesCompiledGlobs, matchesPathRules } from '../extensions/internal/path-rules.ts'
 
 const anchors = { cwd: '/repo/app', projectRoot: '/repo', home: '/home/alex' }
 
@@ -110,4 +110,3 @@ describe('compileGlobs', () => {
     expect(matchesCompiledGlobs('anything', [])).toBe(false)
   })
 })
-
