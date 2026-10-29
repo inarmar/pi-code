@@ -133,9 +133,9 @@ function collectCommands(matchers: HookMatcher[] | undefined, applies: (entry: H
       // Claude runs a handler defined in more than one settings file once; a
       // plugin's or skill's copy of the same handler stays separate. Handlers that
       // share a command but differ in what they run or when (http headers, exec-form
-      // args, an `if` filter, an mcp_tool input) are different handlers: `if` is applied
+      // args or an `if` filter) are different handlers: `if` is applied
       // after this, so collapsing two filters left the other tool call with no guard.
-      const key = `${hook.origin ?? 'settings'}\n${hook.command}\n${JSON.stringify([hook.headers, hook.args, hook.if, hook.input])}`
+      const key = `${hook.origin ?? 'settings'}\n${hook.command}\n${JSON.stringify([hook.headers, hook.args, hook.if])}`
       if (seen.has(key)) continue
       seen.add(key)
       result.push(hook)
