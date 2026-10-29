@@ -76,7 +76,7 @@ export function claudeSettingsSources(cwd: string, home: string, includeProject:
 
 /** The chain as files alone: what most consumers read, in order, later files winning. */
 export function claudeSettingsChain(cwd: string, home: string, includeProject: boolean, platform: NodeJS.Platform = process.platform, owned: (paths: string[]) => boolean = ownedByUser): string[] {
-  return claudeSettingsSources(cwd, home, includeProject, platform, owned, cli).map((source) => source.file)
+  return claudeSettingsSources(cwd, home, includeProject, platform, owned).map((source) => source.file)
 }
 
 /** The files a repository cannot write, for the keys only the user may set (a
@@ -101,7 +101,7 @@ export function localSettingsFile(cwd: string, home: string, platform: NodeJS.Pl
  * notification channel, a question timeout, a retention period). */
 export function readUserSetting(home: string, key: string): unknown {
   let found: unknown
-  for (const settings of readSettingsChain(userSettingsFiles(home, cli))) {
+  for (const settings of readSettingsChain(userSettingsFiles(home))) {
     if (key in settings) found = settings[key]
   }
   return found

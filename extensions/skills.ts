@@ -195,7 +195,7 @@ async function expandSkillInvocation(pi: ExtensionAPI, rawText: string, ctx: Ext
   const invocation = parseSkillInvocation(rawText)
   if (!invocation) return
   const { name, args } = invocation
-  const trusted = isProjectApprovedSilently(ctx)
+  const trusted = ctx.isProjectTrusted?.() === true
   const found = findClaudeSkill(name, skillDirs(ctx.cwd, os.homedir(), trusted))
   // Only pi knows the complete set of loaded skills: built-in paths, .agents,
   // installed packages, custom skillPaths and the paths contributed above.
