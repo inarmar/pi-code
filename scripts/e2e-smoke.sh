@@ -49,11 +49,6 @@ WIRE="$HOMEDIR/wire.jsonl"
 # Trust goes through pi's own store, run from the fixture, so its key is the one pi
 # resolves for that cwd on every platform. Pre-seeded because headless -p has no dialog,
 # and untrusted projects load no project-scoped config, which is most of what this asserts.
-# The MCP servers are user-scope stdio: on a pi with native MCP (pi.registerMcpServer, pi
-# 0.99 and later) pi-code hands them to pi. smoke is deferred behind tool_search, as Claude
-# defers MCP tools by default, so pi lists it in mcp_servers instead of declaring
-# mcp__smoke__echo; loaded sets alwaysLoad and is declared upfront. Older pi gets pi-code's
-# own smoke_echo.
 (cd "$FX" && node --input-type=module - "$(native "$HOMEDIR")" "$(native "$REPO")" <<'JS'
 import * as fs from 'node:fs'
 import { pathToFileURL } from 'node:url'
@@ -62,14 +57,10 @@ const agent = `${home}/.pi/agent`
 const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value))
 write(`${agent}/models.json`, { providers: { dead: { api: 'openai-completions', apiKey: 'dead-key', baseUrl: 'http://127.0.0.1:1/v1', models: [{ contextWindow: 131072, id: 'dead-model', input: ['text'] }] } } })
 write(`${agent}/settings.json`, { packages: [repo], defaultModel: 'dead-model', defaultProvider: 'dead', defaultThinkingLevel: 'off', extensions: [`${repo}/scripts/lib/wire-probe.ts`] })
-const echo = { type: 'stdio', command: 'node', args: [`${repo}/scripts/lib/mcp-echo-server.mjs`] }
-write(`${home}/.claude.json`, { mcpServers: { smoke: echo, loaded: { ...echo, alwaysLoad: true } } })
 const { ProjectTrustStore } = await import(pathToFileURL(`${repo}/node_modules/@earendil-works/pi-coding-agent/dist/index.js`).href)
 new ProjectTrustStore(agent).set(process.cwd(), true)
 JS
 )
-if grep -q 'registerMcpServer' "$REPO/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts" 2>/dev/null; then MCP_TOOL=mcp__smoke__echo; else MCP_TOOL=smoke_echo; fi
-
 run_pi() {
   (cd "$FX" && env -u PI_CODING_AGENT_DIR -u CLAUDE_CONFIG_DIR HOME="$(native "$HOMEDIR")" USERPROFILE="$(native "$HOMEDIR")" PI_E2E_WIRE="$(native "$WIRE")" PI_SKIP_VERSION_CHECK=1 perl -e 'alarm 150; exec @ARGV' "$@" < /dev/null)
 }
@@ -87,15 +78,6 @@ if wire_has 'ZANZIBAR'; then ok "smoke: @import chain content on the wire"; else
 if wire_has 'PERSONAL LOCAL NOTE MARKER'; then ok "smoke: CLAUDE.local.md on the wire"; else bad "smoke: local marker missing from payload"; fi
 if wire_has 'Tests must be deterministic'; then ok "smoke: project rule on the wire"; else bad "smoke: project rule missing from payload"; fi
 if wire_has 'available_skills' && wire_has 'greet'; then ok "smoke: skills listing on the wire"; else bad "smoke: skills listing missing from payload"; fi
-if [ "$MCP_TOOL" = smoke_echo ]; then
-  if wire_has '"smoke_echo"'; then ok "smoke: MCP server tool declared as smoke_echo"; else bad "smoke: MCP tool smoke_echo missing from payload"; fi
-else
-  if wire_has '"tool_search"' && wire_has 'mcp__smoke (tool_search)'; then ok "smoke: deferred MCP server listed for tool_search"; else bad "smoke: deferred MCP server not listed in mcp_servers, or tool_search not declared"; fi
-  if wire_has '"mcp__smoke__echo"'; then bad "smoke: deferred MCP tool mcp__smoke__echo declared upfront"; else ok "smoke: deferred MCP tool not declared upfront"; fi
-  if wire_has '"mcp__loaded__echo"'; then ok "smoke: alwaysLoad MCP tool declared as mcp__loaded__echo"; else bad "smoke: alwaysLoad MCP tool mcp__loaded__echo missing from payload"; fi
-fi
-if grep -q 'builtin:mcp' "$SMOKE/pi-out.log"; then bad "smoke: pi reports pi-code replacing its built-in MCP"; else ok "smoke: no built-in MCP replacement warning"; fi
-
 # --- A freshly cloned project nobody was asked about, headless: no prompt can approve it ---
 # pi itself still loads its CLAUDE.md, and an import inside the project is only more of
 # what the repository ships; everything else project-scoped stays out.
@@ -108,9 +90,6 @@ printf 'Untrusted project context.\n\n@notes/inside.md\n@%s/outside.md\n' "$(nat
 printf 'INSIDE THE PROJECT MARKER\n' > "$UNTRUSTED/notes/inside.md"
 printf 'UNTRUSTED LOCAL MARKER\n' > "$UNTRUSTED/CLAUDE.local.md"
 printf -- '- UNTRUSTED RULE MARKER\n' > "$UNTRUSTED/.claude/rules/rule.md"
-# A project MCP server is the vector that runs a command; unapproved, it must never connect.
-printf '{"mcpServers":{"proj":{"type":"stdio","command":"node","args":["%s/scripts/lib/mcp-echo-server.mjs"]}}}' "$(native "$REPO")" > "$UNTRUSTED/.mcp.json"
-PROJ_TOOL="${MCP_TOOL/smoke/proj}"
 WIRE="$HOMEDIR/wire-untrusted.jsonl"
 FX="$UNTRUSTED" run_pi "$PI_BIN" -p "hi" > "$SMOKE/pi-untrusted.log" 2>&1
 [ -s "$WIRE" ] || bad "smoke: no wire payload captured for the untrusted project (pi output: $(tail -1 "$SMOKE/pi-untrusted.log" 2>/dev/null))"
@@ -119,11 +98,6 @@ if wire_has 'Untrusted project context' && wire_has 'INSIDE THE PROJECT MARKER';
 if wire_has 'OUTSIDE THE PROJECT MARKER'; then bad "smoke: untrusted project imported a file outside it"; elif wire_has 'Imports not loaded (@)'; then ok "smoke: untrusted project's outside import refused, and the prompt says so"; else bad "smoke: no refusal notice for the untrusted project's outside import"; fi
 if wire_has 'UNTRUSTED LOCAL MARKER'; then bad "smoke: untrusted CLAUDE.local.md on the wire"; else ok "smoke: untrusted CLAUDE.local.md kept out"; fi
 if wire_has 'UNTRUSTED RULE MARKER'; then bad "smoke: untrusted project rule on the wire"; else ok "smoke: untrusted project rule kept out"; fi
-# On native pi a registered server is declared (alwaysLoad) or listed in mcp_servers
-# (deferred), so its mcp__proj namespace reaches the wire either way.
-PROJ_MARK="${PROJ_TOOL%__echo}"
-if wire_has "$PROJ_MARK"; then bad "smoke: untrusted project's MCP server registered ($PROJ_MARK on the wire)"; else ok "smoke: untrusted project's MCP server not registered"; fi
-
 printf '\n'
 printf 'e2e-smoke finished: %s passed, %s failed\n' "$PASS" "$FAIL"
 exit $((FAIL > 0))

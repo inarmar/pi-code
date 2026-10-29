@@ -4,7 +4,7 @@
  * Claude Code reads managed-settings.json from an OS-level location that IT
  * deploys and that is not user- or repo-writable in the normal flow, so keys
  * sourced from it carry organizational authority (managed `claudeMd`, exclusion
- * lists, MCP allow/deny). Managed-only keys are honored from this file alone:
+ * lists). Managed-only keys are honored from this file alone:
  * the same key in user or project settings is ignored, so a repository or a
  * local settings edit can neither impersonate nor override the policy.
  */
@@ -34,12 +34,6 @@ export function managedSettingsFile(): string {
   return managedSettingsFileOverride ?? managedSettingsPath()
 }
 
-/** The managed-mcp.json path: a sibling of managed-settings.json (same directory). Derived
- * through the same test seam so a test can write both into one temp dir. */
-export function managedMcpPath(managedFile: string = managedSettingsFile()): string {
-  return path.join(path.dirname(managedFile), 'managed-mcp.json')
-}
-
 /** Files already reported as unparsable. Managed settings are read from sixteen call
  * sites, several of them once per turn, so one warning per broken file is the whole
  * budget; the same warn-once shape project-approval.ts uses for its runtime notice. */
@@ -57,8 +51,7 @@ function readOneSettingsFile(file: string): Record<string, unknown> {
     if (isRecord(parsed)) return parsed
   } catch {
     // Present but unparsable is an administrator's typo, not an absent policy. Silence
-    // there disabled every policy the file carries (exclusion lists, MCP allow and deny,
-    // enabledPlugins, disableAllHooks) on every session, with nothing said anywhere.
+    // there disabled every policy the file carries (exclusion lists and disableAllHooks) on every session, with nothing said anywhere.
     if (!warnedUnparsable.has(file)) {
       warnedUnparsable.add(file)
       console.warn(`pi-code: ignoring ${file}: not valid JSON; the managed policy it carries is not applied`)
