@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import * as http from 'node:http'
-import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -246,9 +245,7 @@ describe('formatHooksSummary', () => {
   it('groups hooks by event with matcher, identity and source settings file', () => {
     const preA = { matcher: 'Bash', hooks: [{ command: 'guard.sh' }] }
     const preB = {
-      hooks: [
-        { type: 'http', url: 'https://ci.example/hook' },
-      ],
+      hooks: [{ type: 'http', url: 'https://ci.example/hook' }],
     }
     const stop = { matcher: '*', hooks: [{ type: 'prompt', prompt: 'done yet?' }] }
     const config = { PreToolUse: [preA, preB], Stop: [stop] }
