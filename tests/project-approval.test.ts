@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hookFiles } from '../extensions/hooks/index.ts'
 import { floorNotice } from '../extensions/internal/pi-floor.ts'
 import { approvalRecheck, hasClaudeShapedConfig, isProjectApproved, isProjectApprovedSilently } from '../extensions/internal/project-approval.ts'
-import { projectConfigPaths } from '../extensions/mcp/index.ts'
 
 const tempDir = (): string => mkdtempSync(join(tmpdir(), 'pa-'))
 
@@ -232,13 +231,6 @@ describe('the trust trigger stays in sync with what the trust-gated extensions c
   // These derive the expected project sources from the extensions themselves so the list cannot
   // silently drift.
 
-  it.each(projectConfigPaths('/x').map((abs) => abs.slice('/x/'.length)))('treats a project with only %s as claude-shaped (mcp project config runs commands on connect)', (rel) => {
-    const cwd = tempDir()
-    mkdirSync(join(cwd, rel, '..'), { recursive: true })
-    writeFileSync(join(cwd, rel), '{}')
-    expect(hasClaudeShapedConfig(cwd)).toBe(true)
-  })
-
   it.each(
     hookFiles('/x', '/h', true)
       .filter((abs) => abs.startsWith('/x/'))
@@ -247,12 +239,6 @@ describe('the trust trigger stays in sync with what the trust-gated extensions c
     const cwd = tempDir()
     mkdirSync(join(cwd, rel, '..'), { recursive: true })
     writeFileSync(join(cwd, rel), '{}')
-    expect(hasClaudeShapedConfig(cwd)).toBe(true)
-  })
-
-  it('treats a project with only a .claude/output-styles directory as claude-shaped (style bodies are injected verbatim)', () => {
-    const cwd = tempDir()
-    mkdirSync(join(cwd, '.claude', 'output-styles'), { recursive: true })
     expect(hasClaudeShapedConfig(cwd)).toBe(true)
   })
 

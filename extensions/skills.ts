@@ -31,20 +31,12 @@ import { parseCommandFile } from './internal/command-file.ts'
 import { claudeConfigDir } from './internal/config-dir.ts'
 import { parseClaudeFrontmatter } from './internal/frontmatter.ts'
 import { managedSettingsFile } from './internal/managed-settings.ts'
-import { installedPlugins, pluginComponentPath } from './internal/plugins.ts'
 import { isProjectApprovedSilently } from './internal/project-approval.ts'
 import { ancestorDirs } from './internal/project-root.ts'
 import { sessionHasTurns, sessionMailbox } from './internal/session-mailbox.ts'
 import { claudeSettingsChain, readSettingsChain } from './internal/settings-chain.ts'
 import { SKILL_HOOKS_CHANNEL } from './internal/skill-hooks.ts'
 import { errorMessage, isDirectory, isRecord } from './internal/values.ts'
-
-/** The extra skill directories a manifest declares, as a list. A string is one entry,
- * a list is itself, anything else declares none. */
-function declaredSkillDirs(declared: unknown): string[] {
-  if (Array.isArray(declared)) return declared.map(String)
-  return typeof declared === 'string' ? [declared] : []
-}
 
 /** Existing `.claude/skills` directories, user first then project. The project
  * directory is included only for approved projects: pi's loader surfaces every skill's
@@ -60,25 +52,6 @@ export function skillDirs(cwd: string, home: string, trusted: boolean): string[]
   // that directory here; personal and project skills are unaffected.
   const enterprise = process.env.CLAUDE_CODE_DISABLE_POLICY_SKILLS === '1' ? [] : [path.join(path.dirname(managedSettingsFile()), '.claude', 'skills')]
   const candidates = [...enterprise, path.join(claudeConfigDir(home), 'skills')]
-  // Enabled plugins contribute their skills directories. pi's loader names a
-  // skill by its directory, so a plugin skill registers without Claude's
-  // /plugin: prefix; a rename-free approximation, disclosed in the README.
-  for (const plugin of installedPlugins(home)) {
-    // Claude: "Adds to the default: `skills`. The default `skills/` directory is always
-    // scanned, and directories listed in `skills` are loaded alongside it." Treating the
-    // declaration as a replacement silently dropped every skill in the conventional
-    // location. (The reference's one exception, a marketplace entry whose source resolves
-    // to the marketplace root, is a marketplace shape pi-code does not model.)
-    const extra = declaredSkillDirs(plugin.manifest.skills)
-    const dirs = [...extra, 'skills']
-    candidates.push(...dirs.map((dir) => pluginComponentPath(plugin, String(dir))).filter((dir): dir is string => dir !== undefined))
-    // NOT SUPPORTED: Claude's single-skill layout, "a plugin that ships exactly one skill
-    // can place SKILL.md directly at the plugin root". skillPaths is handed to pi's own
-    // loader, which owns the layout and looks for <dir>/<name>/SKILL.md; adding the plugin
-    // root here does not surface root/SKILL.md and does start scanning every sibling
-    // directory (hooks/, agents/, commands/) for skills. Supporting it needs a loader that
-    // accepts a directory that IS the skill, which is pi's call, not this extension's.
-  }
   // Claude loads skills from every .claude/skills between cwd and the repository
   // root; the list goes nearest-first so findClaudeSkill's first match is the
   // closest definition (pi's loader receives the same order).

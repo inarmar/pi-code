@@ -32,15 +32,12 @@ const CLAUDE_SHAPED = [
   path.join('.claude', 'settings.local.json'),
   path.join('.claude', 'agents'),
   path.join('.claude', 'hooks'),
-  path.join('.claude', 'output-styles'),
   path.join('.claude', 'rules'),
   path.join('.claude', 'skills'),
   path.join('.claude', 'commands'),
   // Injected into the prompt verbatim, and context-imports treats it as approval-gated.
   path.join('.claude', 'CLAUDE.md'),
   'CLAUDE.local.md',
-  '.mcp.json',
-  path.join('.pi', 'mcp.json'),
   path.join('.pi', 'agents'),
 ]
 
@@ -106,7 +103,7 @@ const defaultDeps: ApprovalDeps = {
   remember: (cwd, trusted) => new ProjectTrustStore(getAgentDir()).set(cwd, trusted),
 }
 
-const APPROVAL_BODY = 'It ships Claude Code configuration that pi-code loads. MCP servers, hooks and agents can run commands from this repository.'
+const APPROVAL_BODY = 'It ships Claude Code configuration that pi-code loads. Hooks and agents can run commands from this repository.'
 
 /** The same decision as isProjectApproved, but never prompts: an undecided project
  * reads as unapproved. For surfaces that only display project config, like the

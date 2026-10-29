@@ -119,36 +119,6 @@ describe('memory frontmatter', () => {
   })
 })
 
-describe('plugin agents', () => {
-  it('discovers an enabled plugin agent between builtins and user agents', () => {
-    const root = join(hoisted.home, '.claude', 'plugins', 'cache', 'market', 'toolkit', '2.0.0')
-    mkdirSync(join(root, 'agents'), { recursive: true })
-    writeFileSync(join(root, 'agents', 'auditor.md'), agentFile('auditor'))
-    mkdirSync(join(hoisted.home, '.claude'), { recursive: true })
-    writeFileSync(join(hoisted.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { toolkit: true } }))
-
-    const cwd = mkdtempSync(join(tmpdir(), 'agents-'))
-    // Plugin agents register under Claude's plugin-scoped id, not the bare name.
-    const found = discoverAgents(cwd, 'user').agents.find((a) => a.name === 'toolkit:auditor')
-    expect(found?.source).toBe('plugin')
-  })
-
-  it('keeps a plugin agent and a same-named user agent as distinct scoped entries', () => {
-    const root = join(hoisted.home, '.claude', 'plugins', 'cache', 'market', 'toolkit', '2.0.0')
-    mkdirSync(join(root, 'agents'), { recursive: true })
-    writeFileSync(join(root, 'agents', 'auditor.md'), agentFile('auditor', 'PLUGIN'))
-    mkdirSync(join(hoisted.home, '.claude', 'agents'), { recursive: true })
-    writeFileSync(join(hoisted.home, '.claude', 'agents', 'auditor.md'), agentFile('auditor', 'USER'))
-    writeFileSync(join(hoisted.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { toolkit: true } }))
-
-    const cwd = mkdtempSync(join(tmpdir(), 'agents-'))
-    // Scoped ids mean a plugin's auditor never clashes with the user's: both exist.
-    const agents = discoverAgents(cwd, 'user').agents
-    expect(agents.find((a) => a.name === 'auditor')?.systemPrompt.trim()).toBe('USER')
-    expect(agents.find((a) => a.name === 'toolkit:auditor')?.systemPrompt.trim()).toBe('PLUGIN')
-  })
-})
-
 describe('argument-scoped tool grants', () => {
   it('rejects an agent whose tools grant is scoped to arguments', () => {
     // `Bash(git log:*)` cannot be expressed in the child's --tools allowlist, and
@@ -254,23 +224,6 @@ describe('monorepo agent discovery', () => {
 })
 
 describe('plugin-scoped agent ids and frontmatter fields', () => {
-  it('names plugin agents with the plugin-scoped identifier, filename as fallback', () => {
-    // Claude: a plugin subagent's agent type is the scoped id such as
-    // my-plugin:reviewer, not the bare frontmatter name.
-    const root = join(hoisted.home, '.claude', 'plugins', 'cache', 'market', 'toolkit', '2.0.0')
-    mkdirSync(join(root, 'agents'), { recursive: true })
-    writeFileSync(join(root, 'agents', 'reviewer.md'), '---\nname: reviewer\ndescription: reviews\n---\nreview things')
-    writeFileSync(join(root, 'agents', 'anon.md'), '---\ndescription: nameless\n---\nwork')
-    mkdirSync(join(hoisted.home, '.claude'), { recursive: true })
-    writeFileSync(join(hoisted.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { toolkit: true } }))
-
-    const cwd = mkdtempSync(join(tmpdir(), 'agents-'))
-    const names = discoverAgents(cwd, 'user').agents.map((a) => a.name)
-    expect(names).toContain('toolkit:reviewer')
-    expect(names).toContain('toolkit:anon')
-    expect(names).not.toContain('reviewer')
-  })
-
   it('rejects a non-plugin agent whose name contains a colon, reserved for plugin ids', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agents-'))
     mkdirSync(join(cwd, '.claude', 'agents'), { recursive: true })

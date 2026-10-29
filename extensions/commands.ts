@@ -53,7 +53,6 @@ import { findModel } from './internal/model-lookup.ts'
 import { capForContext } from './internal/output-guard.ts'
 import { matchesPathRules } from './internal/path-rules.ts'
 import { isPlanModeState, PLAN_MODE_CHANNEL } from './internal/plan-mode-state.ts'
-import { type InstalledPlugin, installedPlugins, pluginComponentPath } from './internal/plugins.ts'
 import { isProjectApproved } from './internal/project-approval.ts'
 import { ancestorDirs, checkoutRoot } from './internal/project-root.ts'
 import { agentNamesIn, matchesAgentRules, matchesDomainRules, matchesSkillRules } from './internal/scope-rules.ts'
@@ -144,22 +143,6 @@ export function collectCommands(dirs: string[]): DiscoveredCommand[] {
     for (const found of discoverCommandFiles(dir)) byName.set(found.name, found)
   }
   return [...byName.values()]
-}
-
-/** A plugin's command files, namespaced `plugin:name` as Claude registers them.
- * The manifest may point `commands` somewhere else; the default is `commands/`. */
-function pluginCommands(plugins: InstalledPlugin[]): DiscoveredCommand[] {
-  const found: DiscoveredCommand[] = []
-  for (const plugin of plugins) {
-    const declared = plugin.manifest.commands
-    const dirs = (Array.isArray(declared) ? declared : [typeof declared === 'string' ? declared : 'commands']).map((entry) => pluginComponentPath(plugin, String(entry))).filter((dir): dir is string => dir !== undefined)
-    for (const dir of dirs) {
-      for (const command of discoverCommandFiles(dir)) {
-        found.push({ name: `${plugin.name}:${command.name}`, filePath: command.filePath, plugin: { root: plugin.root, dataDir: plugin.dataDir, ...(plugin.userConfig ? { userConfig: plugin.userConfig } : {}) } })
-      }
-    }
-  }
-  return found
 }
 
 /** Claude's replacement text for a `!` span it refuses to execute. */
@@ -609,12 +592,8 @@ export default function commandsExtension(pi: ExtensionAPI) {
     // the model resolves against, so it is rebuilt from scratch here: a stale command
     // from a previous project resolves to "unknown" rather than being expanded.
     discovered.clear()
-    // Plugins are user-installed and enabled by user settings; a checked-out repo
-    // must not silently flip which code-bearing plugins run, so enablement is
-    // user-scoped and never reads the project settings chain (see installedPlugins).
-    const plugins = pluginCommands(installedPlugins(os.homedir()))
     const invocable: SlashCommandEntry[] = []
-    for (const command of [...collectCommands(commandDirs(ctx.cwd, os.homedir(), trusted)), ...plugins]) {
+    for (const command of collectCommands(commandDirs(ctx.cwd, os.homedir(), trusted))) {
       let parsed: ParsedCommand
       try {
         parsed = parseCommandFile(fs.readFileSync(command.filePath, 'utf-8'))

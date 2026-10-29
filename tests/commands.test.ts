@@ -612,57 +612,6 @@ describe('when_to_use frontmatter', () => {
   })
 })
 
-describe('plugin commands', () => {
-  const installPluginCommand = (home: string, plugin: string, file: string, body: string): string => {
-    const root = join(home, '.claude', 'plugins', 'cache', 'market', plugin, '1.0.0')
-    mkdirSync(join(root, '.claude-plugin'), { recursive: true })
-    writeFileSync(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: plugin }))
-    mkdirSync(join(root, 'commands'), { recursive: true })
-    writeFileSync(join(root, 'commands', file), body)
-    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { [plugin]: true } }))
-    return root
-  }
-
-  it('registers an enabled plugin command under its plugin namespace with plugin vars', async () => {
-    const cwd = tempDir()
-    mkdirSync(join(hoisted.home, '.claude'), { recursive: true })
-    const root = installPluginCommand(hoisted.home, 'deployer', 'ship.md', 'Run ${CLAUDE_PLUGIN_ROOT}/bin/ship.sh with data in ${CLAUDE_PLUGIN_DATA}.')
-    const s = setup(cwd)
-    await s.handlers.get('session_start')?.({}, s.ctx)
-
-    expect([...s.commands.keys()]).toContain('deployer:ship')
-    await s.commands.get('deployer:ship')?.handler('', s.ctx)
-    expect(s.sent[0]).toBe(`Run ${root}/bin/ship.sh with data in ${join(hoisted.home, '.claude', 'plugins', 'data', 'deployer-market')}.`)
-  })
-
-  it('substitutes ${user_config.*} in a plugin command body from pluginConfigs', async () => {
-    const cwd = tempDir()
-    mkdirSync(join(hoisted.home, '.claude'), { recursive: true })
-    installPluginCommand(hoisted.home, 'deployer', 'ship.md', 'Deploy to ${user_config.region} as ${user_config.actor}.')
-    // Overwrite settings so the enabled plugin also carries its user config.
-    writeFileSync(join(hoisted.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { deployer: true }, pluginConfigs: { deployer: { options: { region: 'eu-west-1' } } } }))
-    const s = setup(cwd)
-    await s.handlers.get('session_start')?.({}, s.ctx)
-
-    await s.commands.get('deployer:ship')?.handler('', s.ctx)
-    // A configured key substitutes; an unset one collapses to empty, like Claude.
-    expect(s.sent[0]).toBe('Deploy to eu-west-1 as .')
-  })
-
-  it('does not register commands from an explicitly disabled plugin', async () => {
-    const cwd = tempDir()
-    const root = join(hoisted.home, '.claude', 'plugins', 'cache', 'market', 'dormant', '1.0.0')
-    mkdirSync(join(root, 'commands'), { recursive: true })
-    writeFileSync(join(root, 'commands', 'x.md'), 'body')
-    mkdirSync(join(hoisted.home, '.claude'), { recursive: true })
-    writeFileSync(join(hoisted.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { dormant: false } }))
-    const s = setup(cwd)
-    await s.handlers.get('session_start')?.({}, s.ctx)
-
-    expect([...s.commands.keys()]).not.toContain('dormant:x')
-  })
-})
-
 describe('claude variables and skill frontmatter wiring', () => {
   it('substitutes ${CLAUDE_*} variables in the body and in allowed-tools rules', async () => {
     const cwd = tempDir()

@@ -13,7 +13,6 @@ import { parseToolGrants } from '../internal/command-file.ts'
 import { claudeConfigDir } from '../internal/config-dir.ts'
 import { parseClaudeFrontmatter } from '../internal/frontmatter.ts'
 import { findModel } from '../internal/model-lookup.ts'
-import { installedPlugins, pluginComponentPath } from '../internal/plugins.ts'
 import { ancestorDirs, findNearestDir, sameLocation } from '../internal/project-root.ts'
 import { errorMessage } from '../internal/values.ts'
 
@@ -350,20 +349,6 @@ export type AgentSource = 'user' | 'project' | 'builtin' | 'plugin'
 /** Bundled default agents (Explore, Plan, general-purpose), lowest precedence. */
 const BUILTIN_AGENTS_DIR = path.join(import.meta.dirname, 'agents')
 
-/** Agent directories of every enabled plugin, each with its plugin name (Claude
- * scopes plugin agent ids as `<plugin>:<name>`): `agents/` unless the manifest
- * points elsewhere. Plugins are user-installed, so user scope only decides. */
-function pluginAgentDirs(home: string): Array<{ dir: string; pluginName: string }> {
-  return installedPlugins(home).flatMap((plugin) => {
-    const declared = plugin.manifest.agents
-    const dirs = Array.isArray(declared) ? declared : [typeof declared === 'string' ? declared : 'agents']
-    return dirs
-      .map((dir) => pluginComponentPath(plugin, String(dir)))
-      .filter((dir): dir is string => dir !== undefined)
-      .map((dir) => ({ dir, pluginName: plugin.name }))
-  })
-}
-
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
   const userDir = path.join(getAgentDir(), 'agents')
   const claudeUserDir = path.join(claudeConfigDir(os.homedir()), 'agents')
@@ -378,9 +363,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
     .filter((dir) => !sameLocation(dir, claudeUserDir))
     .reverse()
 
-  // Plugins load after builtins and before the user's own dirs, so a user agent
-  // wins a name clash with a plugin's, and ~/.pi/agent/agents wins over ~/.claude.
-  const userAgents = scope === 'project' ? [] : [...loadAgentsFromDir(BUILTIN_AGENTS_DIR, 'builtin'), ...pluginAgentDirs(os.homedir()).flatMap((entry) => loadAgentsFromDir(entry.dir, 'plugin', entry.pluginName)), ...loadAgentsFromDir(claudeUserDir, 'user'), ...loadAgentsFromDir(userDir, 'user')]
+  const userAgents = scope === 'project' ? [] : [...loadAgentsFromDir(BUILTIN_AGENTS_DIR, 'builtin'), ...loadAgentsFromDir(claudeUserDir, 'user'), ...loadAgentsFromDir(userDir, 'user')]
   // project .claude/agents loads first so project .pi/agents wins on name conflicts
   const projectAgents = scope === 'user' ? [] : [...projectClaudeDirs.flatMap((dir) => loadAgentsFromDir(dir, 'project')), ...(projectPiDir ? loadAgentsFromDir(projectPiDir, 'project') : [])]
 

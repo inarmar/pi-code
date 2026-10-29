@@ -42,7 +42,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { managedMcpPath, managedSettingsFile } from './managed-settings.ts'
+import { managedSettingsFile } from './managed-settings.ts'
 import { sharedSlot } from './shared-slot.ts'
 import { errorMessage, isRecord } from './values.ts'
 
@@ -62,23 +62,13 @@ export interface CliSettings {
   forwardArgs: string[]
   /** Each refused flag's message, in Claude's wording. */
   errors: string[]
-  /** The `--mcp-config` servers, raw as configured, and whether `--strict-mcp-config`
-   * drops every other MCP scope; undefined when neither flag was given. */
-  mcp?: CliMcpConfig
-}
-
-export interface CliMcpConfig {
-  servers: Record<string, unknown>
-  strict: boolean
 }
 
 /** The flags as pi hands them over (a string when given with a value, true when given
- * bare, undefined when absent); `mcpConfig` lists every `--mcp-config` value in order. */
+ * bare, undefined when absent). */
 export interface CliFlags {
   settings?: unknown
   settingSources?: unknown
-  mcpConfig?: readonly string[]
-  strictMcpConfig?: unknown
 }
 
 function noFlags(): CliSettings {
@@ -137,66 +127,6 @@ function readStrict(file: string): { text: string } | { error: string } {
   return { text }
 }
 
-const MCP_REFUSAL = 'Invalid MCP configuration:\n'
-
-/** Zod's name for the received value's type, as Claude's schema error spells it. */
-function receivedKind(value: unknown): string {
-  if (value === null) return 'null'
-  return Array.isArray(value) ? 'array' : typeof value
-}
-
-/** One `--mcp-config` value's servers, or Claude's refusal. A value that is not a JSON
- * object is a path, resolved against cwd (measured: `'{bad'` is "file not found"). */
-export function resolveMcpConfigValue(raw: string, cwd: string): { servers: Record<string, unknown> } | { error: string } {
-  let text = raw
-  if (!isInlineObject(raw)) {
-    const file = path.resolve(cwd, raw)
-    try {
-      text = fs.readFileSync(file, 'utf-8')
-    } catch {
-      return { error: `${MCP_REFUSAL}MCP config file not found: ${file}` }
-    }
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return { error: `${MCP_REFUSAL}MCP config is not a valid JSON` }
-  }
-  const servers = isRecord(parsed) ? parsed.mcpServers : undefined
-  if (!isRecord(servers)) return { error: `${MCP_REFUSAL}mcpServers: Invalid input: expected record, received ${receivedKind(servers)}` }
-  return { servers }
-}
-
-/** Whether a managed-mcp.json Claude could read and parse is deployed. */
-function managedMcpDeployed(managedFile: string): boolean {
-  try {
-    JSON.parse(fs.readFileSync(managedMcpPath(managedFile), 'utf-8'))
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** Both MCP flags merged into one server set, the args a child needs, and any refusal. */
-function resolveMcpFlags(flags: CliFlags, cwd: string, managedFile: string): { mcp?: CliMcpConfig; forwardArgs: string[]; errors: string[] } {
-  const values = flags.mcpConfig ?? []
-  const strict = flags.strictMcpConfig === true
-  if (values.length === 0 && !strict) return { forwardArgs: [], errors: [] }
-  if (managedMcpDeployed(managedFile)) return { forwardArgs: [], errors: ['You cannot dynamically configure MCP servers when an enterprise MCP config is present'] }
-  const servers: Record<string, unknown> = {}
-  for (const value of values) {
-    const resolved = resolveMcpConfigValue(value, cwd)
-    if ('error' in resolved) return { forwardArgs: [], errors: [resolved.error] }
-    Object.assign(servers, resolved.servers)
-  }
-  const forwardArgs = values.length > 0 ? ['--mcp-config', privateCopy(JSON.stringify({ mcpServers: servers }))] : []
-  // The `=` form: pi's parser takes the token after a bare flag as its value, which
-  // would swallow the child's task.
-  if (strict) forwardArgs.push('--strict-mcp-config=true')
-  return { mcp: { servers, strict }, forwardArgs, errors: [] }
-}
-
 // One removal for every copy the process made, whichever module graph made it: an
 // 'exit' listener per copy would trip node's listener-leak warning.
 const copiesSlot = sharedSlot<Set<string>>('cli-settings-copies')
@@ -229,7 +159,7 @@ export function resolveSettingsFlag(raw: string, cwd: string): { file: string } 
 
 /** Every flag as pi hands it over. Any refusal fails closed: no file source, no
  * snapshot, nothing forwarded, no MCP server once an MCP flag was given, only the errors. */
-export function resolveCliSettings(flags: CliFlags, cwd: string, managedFile: string = managedSettingsFile()): CliSettings {
+export function resolveCliSettings(flags: CliFlags, cwd: string): CliSettings {
   const result = noFlags()
   if (typeof flags.settings === 'string') {
     const resolved = resolveSettingsFlag(flags.settings, cwd)
@@ -247,12 +177,8 @@ export function resolveCliSettings(flags: CliFlags, cwd: string, managedFile: st
       result.forwardArgs.push('--setting-sources', flags.settingSources)
     }
   }
-  const mcp = resolveMcpFlags(flags, cwd, managedFile)
-  result.errors.push(...mcp.errors)
-  const mcpGiven = (flags.mcpConfig ?? []).length > 0 || flags.strictMcpConfig === true
-  if (result.errors.length > 0) return { ...noFlags(), sources: new Set(), errors: result.errors, ...(mcpGiven ? { mcp: { servers: {}, strict: true } } : {}) }
-  result.forwardArgs.push(...mcp.forwardArgs)
-  return mcp.mcp === undefined ? result : { ...result, mcp: mcp.mcp }
+  if (result.errors.length > 0) return { ...noFlags(), sources: new Set(), errors: result.errors }
+  return result
 }
 
 // One resolution per raw pair for the whole process, whichever extension instance

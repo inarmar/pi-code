@@ -11,9 +11,9 @@
 [![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=ilovepixelart_pi-code&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=ilovepixelart_pi-code)
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=ilovepixelart_pi-code&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=ilovepixelart_pi-code)
 
-Claude Code experience for the [pi](https://pi.dev) coding agent, in one package. Point pi at a project that already has a `.claude/` directory and it reads your existing config: rules, commands, skills, hooks, output styles, MCP servers, and agents. It also adds the Claude Code features pi lacks: a todo overlay, checkpoints, memory, web search, subagents, and goals.
+Claude Code experience for the [pi](https://pi.dev) coding agent, in one package. Point pi at a project that already has a `.claude/` directory and it reads your existing config: rules, commands, skills, hooks, and agents. It also provides todos, web search, subagents, planning, and goals.
 
-What a repository ships is treated as untrusted until you approve it: project MCP servers, hooks, agents, rules, output styles, commands and skills load only once you say yes. A headless run (`pi -p`) cannot ask, so an undecided project loads none of them there, which is stricter than Claude, where a headless run uses them without showing the dialog.
+What a repository ships is treated as untrusted until you approve it: project hooks, agents, rules, commands and skills load only once you say yes. A headless run (`pi -p`) cannot ask, so an undecided project loads none of them there, which is stricter than Claude, where a headless run uses them without showing the dialog.
 
 ![pi-code demo](demos/hero.gif)
 
@@ -42,31 +42,26 @@ One `pi install` and everything below loads on the next start. `pi list` shows w
 Each topic links to its own doc with the full contract and any divergences from Claude Code.
 
 - **[Hooks](docs/hooks.md)** — your `.claude/settings.json` hooks on every lifecycle event, with Claude's tool vocabulary, decision fields, and background hooks.
-- **[MCP servers](docs/mcp.md)** — every Claude config scope, all four transports, OAuth, managed policy, timeouts, prompts, and resources. On pi 0.99 and later the servers are handed to pi's own MCP support.
 - **[Custom slash commands](docs/commands.md)** — `.claude/commands` with arguments, bash spans, `@file` inlining, frontmatter, and model invocation.
 - **[Skills](docs/skills.md)** — `.claude/skills` discovery plus the same dynamic content commands get.
 - **[Subagents](docs/subagents.md)** — built-in and custom agents, background runs, per-agent memory, worktree isolation.
 - **[CLAUDE.md, @imports, and rules](docs/claude-md.md)** — the context files and path-scoped rules pi does not load natively.
 - **[Settings `env` and flags](docs/settings-env.md)** — env blocks from every settings scope, exported with Claude's precedence, plus Claude's `--settings` and `--setting-sources` flags.
-- **[Output styles](docs/output-styles.md)** — replace semantics, bundled built-ins, `/output-style`.
-- **[Persistent memory](docs/memory.md)** — a per-repository store with a session-injected index.
-- **[Statusline](docs/statusline.md)** — your Claude `statusLine` command with the documented stdin JSON.
 - **[WebSearch / WebFetch](docs/web.md)** — key-free search and SSRF-guarded fetch.
-- **[Claude plugins](docs/plugins.md)** — installed marketplace plugins: commands, agents, hooks, MCP servers, styles, skills.
 - **[Goal](docs/goal.md)**: `/goal <condition>` keeps the session working until a separate model check confirms the condition holds, with status, clear, block cap, background-work deferral, and resume.
-- **[Session extras](docs/session-extras.md)** — project trust, plan mode, todos, checkpoints/rewind, AskUserQuestion, notifications, think keywords, session titles, `/context`, `/init`.
+- **[Session extras](docs/session-extras.md)** — project trust, plan mode, todos, AskUserQuestion, think keywords, `/context`, `/init`.
 
-Slash commands: `/init`, `/context`, `/goal`, `/memory`, `/todos`, `/rewind`, `/tasks`, `/agents`, `/plan`, `/plan-todos`, `/mcp`, `/hooks`, and `/output-style`, alongside your own `/dir:name` commands, `/skill:name` skills, `/plugin:name` plugin commands, and each connected server's `/mcp__server__prompt` prompts. Where a name matches a Claude command, these differ: `/init` creates `AGENTS.md` where Claude creates `CLAUDE.md`; `/memory edit` opens a memory file in your editor (pi's `externalEditor` setting, `VISUAL` or `EDITOR`); `/tasks` lists background subagent runs only, not background shells. `/todos` and `/plan-todos` have no Claude counterpart.
+Slash commands: `/init`, `/context`, `/goal`, `/todos`, `/tasks`, `/agents`, `/plan`, `/plan-todos`, and `/hooks`, alongside your own `/dir:name` commands, `/skill:name` skills. Where a name matches a Claude command, these differ: `/init` creates `AGENTS.md` where Claude creates `CLAUDE.md`; `/tasks` lists background subagent runs only, not background shells. `/todos` and `/plan-todos` have no Claude counterpart.
 
 pi has no general permission system, so most of what Claude routes through a permission prompt maps to hard behavior here: `allowed-tools` restricts the turn's tool set instead of pre-approving calls, and a hook that times out on PreToolUse or UserPromptSubmit fails closed. A hook's `permissionDecision: "ask"` is the exception: it shows a confirm dialog and lets the call through when you approve (a headless run has no dialog, so it blocks). Where a Claude restriction cannot be expressed at all (an argument-scoped grant in an agent's `tools:`), the definition is rejected rather than widened.
 
-Trust is the other place pi-code is deliberately stricter. Claude states that "a `claude -p` run never shows the trust dialog" and loads the project's hooks, MCP servers, agents, commands, skills and rules anyway. pi-code refuses instead: with no stored decision and no UI to ask, a headless run in a project you have not already trusted loads none of them. A repository would otherwise get to run its own hooks and MCP servers in any CI job that checks it out, with nobody present to decline.
+Trust is the other place pi-code is deliberately stricter. Claude states that "a `claude -p` run never shows the trust dialog" and loads the project's hooks, agents, commands, skills and rules anyway. pi-code refuses instead: with no stored decision and no UI to ask, a headless run in a project you have not already trusted loads none of them. A repository would otherwise get to run its own hooks in any CI job that checks it out, with nobody present to decline.
 
-`CLAUDE.md` itself needs no extension: pi loads `CLAUDE.md` / `AGENTS.md` context files natively (global + walking cwd to root). `context-imports.ts` adds what pi's loader lacks, the `@import` resolution and Claude's other memory locations, without re-injecting the base (see [docs/claude-md.md](docs/claude-md.md)). Setting `CLAUDE_CONFIG_DIR` relocates the entire home config scope (settings, commands, agents, skills, plugins, output styles, memory, and the user `CLAUDE.md`); a project's own `.claude/` is a separate scope and is unaffected.
+`CLAUDE.md` itself needs no extension: pi loads `CLAUDE.md` / `AGENTS.md` context files natively (global + walking cwd to root). `context-imports.ts` adds what pi's loader lacks, the `@import` resolution and Claude's other memory locations, without re-injecting the base (see [docs/claude-md.md](docs/claude-md.md)). Setting `CLAUDE_CONFIG_DIR` relocates the entire home config scope (settings, commands, agents, skills, and the user `CLAUDE.md`); a project's own `.claude/` is a separate scope and is unaffected.
 
 [`extensions/internal/`](extensions/internal) holds the shared modules pi's loader must not treat as extensions (each file's header says what it owns); only `internal/` keeps them out of pi's extension scan.
 
-Vendored bases (`question`, `notify`, `status-line`) come from pi's MIT example extensions (see [LICENSE](LICENSE)).
+Vendored base (`question`) come from pi's MIT example extensions (see [LICENSE](LICENSE)).
 
 ## Development
 

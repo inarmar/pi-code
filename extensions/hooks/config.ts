@@ -7,7 +7,6 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { readManagedSettings } from '../internal/managed-settings.ts'
-import { type InstalledPlugin, pluginComponentPath, substitutePluginVars } from '../internal/plugins.ts'
 import { claudeSettingsChain, readSettingsChain } from '../internal/settings-chain.ts'
 import { errorMessage, escapeRegExp, isRecord } from '../internal/values.ts'
 
@@ -195,18 +194,7 @@ function stampOrigin(entries: HookMatcher[], origin: string, event: string): voi
   }
 }
 
-/** Stamp the declaring plugin's paths onto every hook it contributes, so the runner
- * can export them without re-deriving which plugin a hook came from. */
-function stampPluginPaths(entries: HookMatcher[], plugin: { root: string; dataDir: string }): void {
-  for (const entry of entries) {
-    for (const hook of entry.hooks ?? []) {
-      hook.pluginRoot = plugin.root
-      hook.pluginDataDir = plugin.dataDir
-    }
-  }
-}
-
-function mergeHooksJson(config: HooksConfig, raw: string, source: string, sources?: Map<HookMatcher, string>, origin?: string, plugin?: { root: string; dataDir: string }): void {
+function mergeHooksJson(config: HooksConfig, raw: string, source: string, sources?: Map<HookMatcher, string>, origin?: string): void {
   let parsed: { hooks?: HooksConfig }
   try {
     parsed = JSON.parse(raw)
@@ -224,81 +212,10 @@ function mergeHooksJson(config: HooksConfig, raw: string, source: string, source
     const usable = matchers.filter((entry) => isUsableMatcher(entry, source, event))
     if (usable.length === 0) continue
     if (origin !== undefined) stampOrigin(usable, origin, event)
-    if (plugin !== undefined) stampPluginPaths(usable, plugin)
     config[event] = [...(config[event] ?? []), ...usable]
     // Each parse produces fresh entry objects, so object identity keys the /hooks
     // viewer's source attribution without touching the entries themselves.
     for (const entry of usable) sources?.set(entry, source)
-  }
-}
-
-/** The substitution here lands inside raw JSON, so values must arrive escaped:
- * an unescaped Windows root injected \U-style sequences, the parse threw, and
- * every hook the plugin declared silently vanished. */
-const jsonEscape = (value: string): string => JSON.stringify(value).slice(1, -1)
-
-/** A reference Claude refuses to substitute into anything that reaches a shell. */
-const USER_CONFIG_REF = /\$\{user_config\./
-
-/**
- * Drop shell-form hook commands that reference `${user_config.*}`. Claude: "Fields that
- * run in a shell reject `${user_config.*}`: substituting a configured value into a shell
- * command would let the shell run whatever that value contains, so the component fails
- * with an error instead." Exec form (`args`) and every other field still substitute, and
- * the documented alternative is reading CLAUDE_PLUGIN_OPTION_<KEY> from the hook's
- * environment. Sibling hooks in the same file are unaffected: one rejected component
- * costs itself, not the plugin's other hooks.
- */
-function withoutUserConfigShellCommands(raw: string, source: string): string {
-  let parsed: { hooks?: Record<string, unknown> }
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return raw // mergeHooksJson reports the parse failure
-  }
-  let dropped = false
-  for (const matchers of Object.values(parsed?.hooks ?? {})) {
-    if (!Array.isArray(matchers)) continue
-    for (const entry of matchers) {
-      // A malformed entry is left for mergeHooksJson to report by name; this pass must
-      // not throw on it, because the inline-manifest caller has no catch.
-      if (!isRecord(entry) || !Array.isArray(entry.hooks)) continue
-      const record = entry
-      const kept = (record.hooks as unknown[]).filter((hook) => {
-        if (!isRecord(hook)) return true
-        const candidate = hook as { command?: unknown; args?: unknown }
-        if (Array.isArray(candidate.args) || typeof candidate.command !== 'string' || !USER_CONFIG_REF.test(candidate.command)) return true
-        console.warn(`pi-code-hooks: ignoring a hook in ${source}: a shell-form command cannot reference \${user_config.*}; use exec form with "args", or read CLAUDE_PLUGIN_OPTION_<KEY> from the environment`)
-        dropped = true
-        return false
-      })
-      record.hooks = kept
-    }
-  }
-  return dropped ? JSON.stringify(parsed) : raw
-}
-
-/** Each enabled plugin's hooks (hooks/hooks.json, or wherever the manifest points),
- * with ${CLAUDE_PLUGIN_ROOT}/${CLAUDE_PLUGIN_DATA} substituted before parsing so a
- * hook can name its bundled scripts by real path. */
-export function loadPluginHooks(config: HooksConfig, plugins: InstalledPlugin[], sources?: Map<HookMatcher, string>): void {
-  for (const plugin of plugins) {
-    const declared = plugin.manifest.hooks
-    // An inline hooks object; an array is not a valid hooks map (it would parse to
-    // numeric event keys), so it falls through to the default path rather than
-    // silently registering nothing.
-    if (declared !== null && typeof declared === 'object' && !Array.isArray(declared)) {
-      const inlineSource = `${plugin.name} (plugin.json)`
-      mergeHooksJson(config, substitutePluginVars(withoutUserConfigShellCommands(JSON.stringify({ hooks: declared }), inlineSource), plugin, jsonEscape), inlineSource, sources, `plugin:${plugin.name}`, plugin)
-      continue
-    }
-    const file = pluginComponentPath(plugin, typeof declared === 'string' ? declared : path.join('hooks', 'hooks.json'))
-    if (file === undefined) continue
-    try {
-      mergeHooksJson(config, substitutePluginVars(withoutUserConfigShellCommands(fs.readFileSync(file, 'utf-8'), file), plugin, jsonEscape), file, sources, `plugin:${plugin.name}`, plugin)
-    } catch {
-      // a plugin without hooks contributes nothing
-    }
   }
 }
 

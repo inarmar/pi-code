@@ -104,7 +104,6 @@ import { readManagedSettings } from '../internal/managed-settings.ts'
 import { isMcpToolAliases, MCP_TOOLS_CHANNEL } from '../internal/mcp-alias.ts'
 import { resolveModelOverride } from '../internal/model-lookup.ts'
 import { isPlanModeState, PLAN_MODE_CHANNEL } from '../internal/plan-mode-state.ts'
-import { installedPlugins, managedForceEnabled } from '../internal/plugins.ts'
 import { approvalRecheck, isProjectApproved } from '../internal/project-approval.ts'
 import { checkoutRoot } from '../internal/project-root.ts'
 import { watchSettingsFiles } from '../internal/settings-watch.ts'
@@ -113,7 +112,7 @@ import { isSubagentPhaseEvent, SUBAGENT_CHANNEL } from '../internal/subagent-eve
 import { setSubagentStartHookRunner } from '../internal/subagent-hooks.ts'
 import { contentText, parseNumericEnv } from '../internal/values.ts'
 import { claudeToolInput, claudeToolName, claudeToolResponse, piToolOutput } from './claude-tools.ts'
-import { formatHooksSummary, type HookCommand, type HookMatcher, type HooksConfig, hookFiles, isBackgroundHook, loadHooks, loadManagedHooks, loadPluginHooks, mergeAgentEnvHooks, mergeSkillHooks, readAllowedHttpHookUrls, readDisableAllHooks, readSettingsDisableAllHooks } from './config.ts'
+import { formatHooksSummary, type HookCommand, type HookMatcher, type HooksConfig, hookFiles, isBackgroundHook, loadHooks, loadManagedHooks, mergeAgentEnvHooks, mergeSkillHooks, readAllowedHttpHookUrls, readDisableAllHooks, readSettingsDisableAllHooks } from './config.ts'
 import { blockedToolCall, type HookDecision, jsonBlockVerdict, postToolFeedback, promptContext, runPreToolUse, runUserPromptSubmit, surfaceSystemMessages, tryParseJson } from './decisions.ts'
 import { allCommands, matchingCommands, passesIfFilter } from './matcher.ts'
 import { type HookRunner, type HookRunResult, runAgentHook, runHookCommand, runHttpHook, runMcpToolHook, runPromptHook, sessionEndTimeoutMs, timeoutMs } from './runners.ts'
@@ -499,31 +498,16 @@ export default function hooksExtension(pi: ExtensionAPI) {
       return
     }
     config = loadManagedHooks(hookSources, managedSettings)
-    // Claude's allowManagedHooksOnly: user, project, local, plugin, and skill
+    // Claude's allowManagedHooksOnly: user, project, local and skill
     // hooks are blocked; only the managed set runs.
     managedHooksOnly = managedSettings.allowManagedHooksOnly === true
-    // The escape hatch is checked FIRST, and deliberately: a settings-level
-    // disableAllHooks turns off every non-managed hook, and a plugin's hooks are
-    // non-managed however the plugin came to be enabled. Only the managed policy hooks
-    // loaded above survive it. Putting the force-enable exemption ahead of this let an
-    // administrator's enabledPlugins entry defeat the user's own escape hatch.
-    if (readSettingsDisableAllHooks(files)) return
-    if (managedHooksOnly) {
-      // Claude: "Hooks from plugins force-enabled in managed settings `enabledPlugins`
-      // are exempt." That exemption is from allowManagedHooksOnly, not from the hatch.
-      loadPluginHooks(config, managedForceEnabled(installedPlugins(os.homedir())), hookSources)
-      return
-    }
     mergeNonManagedHooks(files)
   }
 
   /** Merge the non-managed hook sources into the managed config resolveConfig loaded:
-   * settings files, plugins, a subagent child's agent hooks, and this session's skill hooks. */
+   * settings files, a subagent child's agent hooks, and this session's skill hooks. */
   function mergeNonManagedHooks(files: string[]): void {
     for (const [eventName, matchers] of Object.entries(loadHooks(files, hookSources))) config[eventName] = [...(config[eventName] ?? []), ...matchers]
-    // Plugins are user-installed and enabled by user settings (see installedPlugins),
-    // so a checked-out repo cannot toggle which code-bearing plugin hooks run.
-    loadPluginHooks(config, installedPlugins(os.homedir()), hookSources)
     // Inside a subagent child, the parent passes the agent's frontmatter hooks via
     // env (Stop already converted to SubagentStop, per Claude); they run only for
     // this child process.

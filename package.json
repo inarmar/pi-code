@@ -1,7 +1,7 @@
 {
   "name": "pi-code",
   "version": "1.6.1",
-  "description": "Claude Code experience for the pi coding agent: reads your .claude config (rules, commands, skills, hooks, output styles, MCP servers, agents) and adds todo, checkpoints, memory, web, subagents, and goals",
+  "description": "Claude Code compatibility for pi: commands, skills, hooks, rules, subagents, tasks, goals and planning",
   "keywords": [
     "pi",
     "pi-package",
@@ -12,11 +12,9 @@
     "claude-code",
     "coding-agent",
     "ai",
-    "mcp",
     "hooks",
     "skills",
     "subagents",
-    "memory",
     "todo"
   ],
   "license": "MIT",
@@ -52,9 +50,6 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
