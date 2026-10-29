@@ -913,15 +913,15 @@ describe('hooks extension session_start', () => {
     expect(commandsRun()).toEqual(['home-session', 'home-pre', 'project-pre', 'local-pre'])
   })
 
-  it('ignores project settings when the approval prompt is declined', async () => {
+  it('uses Pi trust without a second approval dialog', async () => {
     const project = tempDir('hooks-proj-')
     writeSettings(hoisted.home, 'settings.json', homeConfig)
     writeSettings(project, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'project-pre' }] }] })
 
     const ext = setupExtension()
-    await ext.sessionStart('startup', { cwd: project, isProjectTrusted: () => true, hasUI: true, ui: { confirm: async () => false } })
+    await ext.sessionStart('startup', { cwd: project, isProjectTrusted: () => true, hasUI: true, ui: { confirm: async () => { throw new Error('Unexpected second approval') } } })
     await ext.toolCall('bash', {})
-    expect(commandsRun()).toEqual(['home-session', 'home-pre'])
+    expect(commandsRun()).toEqual(['home-session', 'home-pre', 'project-pre'])
   })
 
   it('ignores project settings when the project is untrusted', async () => {
@@ -2896,16 +2896,14 @@ describe('settings watching', () => {
   })
 
   it('does not load project hooks that appear mid-session in a project nobody approved', async () => {
-    // A repository with nothing claude-shaped reads as approved without a question, and
-    // the watcher used to reuse that answer: checking out a branch that ships
-    // .claude/settings.json ran its hook commands with no approval dialog.
+    // Pi's project trust remains false across settings watcher reloads.
     process.env.PI_CODE_SETTINGS_WATCH_INTERVAL_MS = '25'
     try {
       writeSettings(hoisted.home, 'settings.json', {})
       const project = tempDir('hooks-proj-')
       mkdirSync(join(project, '.git'))
       const ext = setupExtension()
-      await ext.sessionStart('startup', { cwd: project, isProjectTrusted: () => true })
+      await ext.sessionStart('startup', { cwd: project, isProjectTrusted: () => false })
 
       writeSettings(project, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'project-hook' }] }] })
       writeSettings(hoisted.home, 'settings.json', { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'user-hook' }] }] })

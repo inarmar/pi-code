@@ -90,11 +90,9 @@ describe('extension wiring', () => {
 
     const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>()
     skillsExt({ on: (name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) => handlers.set(name, fn) } as never)
-    // A .claude/skills directory is itself claude-shaped config, so a project pi trusts
-    // silently but has no stored decision for contributes nothing: only the hermetic home
-    // skills survive, and never the project's, trusted or not.
+    // Pi's own trust state is authoritative. No separate pi-code approval is requested.
     const trusted = (await handlers.get('resources_discover')?.({ reason: 'startup' }, { cwd, isProjectTrusted: () => true })) as { skillPaths: string[] } | undefined
-    expect(trusted).toEqual({ skillPaths: [homeSkills] })
+    expect(trusted).toEqual({ skillPaths: [homeSkills, join(cwd, '.claude', 'skills')] })
 
     const untrusted = (await handlers.get('resources_discover')?.({ reason: 'startup' }, { cwd, isProjectTrusted: () => false })) as { skillPaths: string[] } | undefined
     expect(untrusted).toEqual({ skillPaths: [homeSkills] })
