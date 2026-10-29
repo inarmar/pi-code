@@ -778,7 +778,7 @@ describe('malformed hook config', () => {
 
 describe('hooks extension registration', () => {
   it('subscribes to the lifecycle events it bridges', () => {
-    expect(setupExtension().registered).toEqual(['session_start', 'before_agent_start', 'tool_call', 'tool_execution_end', 'tool_result', 'user_bash', 'input', 'agent_end', 'agent_before_settle', 'session_before_compact', 'session_compact', 'model_select', 'session_shutdown'])
+    expect(setupExtension().registered).toEqual(['agent_settled', 'session_start', 'before_agent_start', 'tool_call', 'tool_execution_end', 'tool_result', 'user_bash', 'input', 'agent_end', 'agent_before_settle', 'session_before_compact', 'session_compact', 'model_select', 'session_shutdown'])
   })
 })
 
