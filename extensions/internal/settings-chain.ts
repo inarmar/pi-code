@@ -79,34 +79,6 @@ export function claudeSettingsChain(cwd: string, home: string, includeProject: b
   return claudeSettingsSources(cwd, home, includeProject, platform, owned).map((source) => source.file)
 }
 
-/** The files a repository cannot write, for the keys only the user may set (a
- * notification channel, a question timeout, a retention period, plugin enablement):
- * the user settings.json unless `--setting-sources` excludes it, then the `--settings`
- * snapshot, which Claude lets set "any key your user settings file can set". */
-export function userSettingsFiles(home: string): string[] {
-  const files: string[] = []
-  files.push(path.join(claudeConfigDir(home), 'settings.json'))
-  return files
-}
-
-/** The settings.local.json the chain reads last, which is also where a setting a
- * command persists (an output-style choice, an MCP consent) must be written for the
- * chain to read it back: a file at any other level is never consulted. */
-export function localSettingsFile(cwd: string, home: string, platform: NodeJS.Platform = process.platform, owned: (paths: string[]) => boolean = ownedByUser): string {
-  return path.join(localSettingsDir(cwd, home, platform, owned), '.claude', 'settings.local.json')
-}
-
-/** The last value the user-level files (userSettingsFiles) set for `key`, or
- * undefined when none does: for the settings a repository must not influence (a
- * notification channel, a question timeout, a retention period). */
-export function readUserSetting(home: string, key: string): unknown {
-  let found: unknown
-  for (const settings of readSettingsChain(userSettingsFiles(home))) {
-    if (key in settings) found = settings[key]
-  }
-  return found
-}
-
 /** Every readable settings object in the chain, in order, so the last one a caller
  * sees for a key is the one that wins. A file that is missing, unparseable, or not a
  * JSON object is skipped: a corrupt settings.json must not end the chain, or the

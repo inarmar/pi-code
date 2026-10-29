@@ -151,7 +151,7 @@ function wordStep(segment: string, i: number, state: WordState): number {
 /** Whether an ANSI-C $'...' string uses a numeric or control escape (`\x2d`, `\055`,
  * `\u002d`, `\cA`), which can spell any character, a flag's dash included. Only a `$'`
  * bash reads as ANSI-C counts: one inside "..." or after `\$` is plain text. */
-export function hasAnsiCNumericEscape(command: string): boolean {
+function hasAnsiCNumericEscape(command: string): boolean {
   let quote: Quote | undefined
   for (let i = 0; i < command.length; ) {
     if (quote === undefined) {

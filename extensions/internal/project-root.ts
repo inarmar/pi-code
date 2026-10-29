@@ -20,7 +20,6 @@ import * as path from 'node:path'
  * project (its own memory directory, settings.local.json, CLAUDE_PROJECT_DIR and trust
  * decision), and a repository can add a package.json wherever it likes, so a marker it
  * controls is a marker it can move. Claude's project is the repository. */
-export const ROOT_MARKERS = ['.git']
 
 /** Project root at or above `from`, or undefined outside a repository. */
 export function repoRoot(from: string): string | undefined {
@@ -143,11 +142,6 @@ function findNearest(cwd: string, relative: string, wantDir: boolean): string | 
   }
 }
 
-/** Nearest `relative` directory at or above `cwd`, stopping at the repository root. */
-export function findNearestDir(cwd: string, relative: string): string | null {
-  return findNearest(cwd, relative, true)
-}
-
 /** Nearest `relative` file at or above `cwd`, stopping at the repository root. */
 export function findNearestFile(cwd: string, relative: string): string | null {
   return findNearest(cwd, relative, false)
@@ -169,21 +163,4 @@ export function ancestorDirs(cwd: string, relative: string): string[] {
     currentDir = parentDir
   }
   return found
-}
-
-/** Every `relative` file between the repository root and cwd, ordered root first,
- * matching Claude's root-down ordering for hierarchy-loaded context. */
-export function ancestorFiles(cwd: string, relative: string): string[] {
-  const boundary = gitRoot(cwd) ?? cwd
-  const found: string[] = []
-  let currentDir = cwd
-  while (true) {
-    const candidate = path.join(currentDir, relative)
-    if (statOf(candidate)?.isFile()) found.push(candidate)
-    if (currentDir === boundary) break
-    const parentDir = path.dirname(currentDir)
-    if (parentDir === currentDir) break
-    currentDir = parentDir
-  }
-  return found.reverse()
 }
