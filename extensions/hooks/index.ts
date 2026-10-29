@@ -126,7 +126,7 @@ export * from './runners.ts'
 /** The text of the last assistant message in a turn, for Claude's Stop-hook
  * `last_assistant_message`. Thinking and tool calls are dropped; a plain-string
  * content is returned as-is. */
-export function lastAssistantText(messages: ReadonlyArray<{ role: string; content: unknown }>): string {
+export function lastAssistantText(messages: ReadonlyArray<{ role: string; content?: unknown }>): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
     if (message.role !== 'assistant') continue
@@ -768,7 +768,7 @@ export default function hooksExtension(pi: ExtensionAPI) {
    * not apply to them. Only the agent's own frontmatter hooks (stamped agent:<name>): the
    * settings-level SubagentStop is fired by the parent when the child completes, so the
    * child firing it too ran it twice. */
-  const fireChildSubagentStop = async (event: { messages?: Array<{ role: string; content: unknown }> }, ctx: ExtensionContext): Promise<void> => {
+  const fireChildSubagentStop = async (event: { messages?: Array<{ role: string; content?: unknown }> }, ctx: ExtensionContext): Promise<void> => {
     if (!agentIdentity) return
     const subStop = matchingCommands(config.SubagentStop, agentIdentity.agent).filter((command) => command.origin?.startsWith('agent:'))
     if (subStop.length === 0) return
@@ -799,10 +799,9 @@ export default function hooksExtension(pi: ExtensionAPI) {
   })
 
   pi.on('agent_before_settle', async (event, ctx) => {
-    // Child agent-frontmatter Stop hooks are converted to SubagentStop at agent_end.
-    if (inSubagentChild()) return
-    // An interrupt or unrecoverable provider error is not a normal Claude Stop.
-    if (event.outcome !== 'completed') {
+    // Child agent-frontmatter Stop hooks run at agent_end; failed or aborted
+    // runs must not trigger a main-agent Claude Stop.
+    if (inSubagentChild() || event.outcome !== 'completed') {
       stopHookActive = false
       stopHookBlockCount = 0
       return
