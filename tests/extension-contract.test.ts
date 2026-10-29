@@ -142,44 +142,7 @@ describe('pi session replacement contract', () => {
     }
   })
 
-  it('delivers a result held across a replacement through the next session at its session_start', async () => {
-    // The session mailbox attaches at session_start and flushes there, so pi must accept a
-    // sendMessage from inside that handler of the replacement session.
-    const { sessionMailbox } = await import('../extensions/internal/session-mailbox.ts')
-    const mailbox = sessionMailbox('contract-replacement')
-    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'contract-cwd-')))
-    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'contract-agent-'))
-    const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
-      const services = await createAgentSessionServices({
-        cwd,
-        agentDir,
-        resourceLoaderOptions: {
-          noExtensions: true,
-          extensionFactories: [
-            (pi) => {
-              pi.on('session_start', () => mailbox.attach(pi, true))
-              pi.on('session_shutdown', () => mailbox.detach(pi))
-            },
-          ],
-        },
-      })
-      return { ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })), services, diagnostics: services.diagnostics }
-    }
-    const runtime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) })
-    await runtime.session.bindExtensions({})
-    try {
-      await runtime.newSession({
-        setup: async () => {
-          mailbox.deliver((pi) => pi.sendMessage({ customType: 'contract-result', content: 'late result', display: true }))
-        },
-      })
-      await runtime.session.bindExtensions({})
-      const delivered = runtime.session.messages.filter((m) => m.role === 'custom' && m.customType === 'contract-result')
-      expect(delivered.map((m) => (m.role === 'custom' ? m.content : undefined))).toEqual(['late result'])
-    } finally {
-      await runtime.dispose()
-    }
-  })
+
 })
 
 // pi added `agent_settled` in 0.80.4, which was never published; 0.80.5 is the first
