@@ -84,7 +84,6 @@ describe('cross-extension seams meet across module graphs', () => {
       registrar.setAddDirReader(undefined)
     }
   })
-
 })
 
 // The settings watchers in hooks and env-settings outlive the handler that

@@ -465,20 +465,11 @@ export default function hooksExtension(pi: ExtensionAPI) {
     if (registeredSkillHooks.length === 0) return
     registeredSkillHooks.length = 0
     spentOnce.clear()
-    for (const [name, matchers] of Object.entries(config)) {
-      const kept: HookMatcher[] = []
-      for (const matcher of matchers) {
-        const hooks = matcher.hooks.filter((hook) => !hook.origin?.startsWith('skill:'))
-        if (hooks.length === 0) {
-          hookSources.delete(matcher)
-        } else if (hooks.length === matcher.hooks.length) {
-          kept.push(matcher)
-        } else {
-          kept.push({ ...matcher, hooks })
-        }
-      }
-      if (kept.length === 0) delete config[name]
-      else config[name] = kept
+    for (const [event, matchers] of Object.entries(config)) {
+      const keep = matchers.filter((matcher) => !matcher.hooks.some((hook) => hook.origin?.startsWith('skill:')))
+      for (const matcher of matchers) if (!keep.includes(matcher)) hookSources.delete(matcher)
+      if (keep.length > 0) config[event] = keep
+      else delete config[event]
     }
   }
   pi.on('agent_settled', expireSkillHooks)
@@ -723,8 +714,6 @@ export default function hooksExtension(pi: ExtensionAPI) {
     stopHookActive = true
     return true
   }
-
-
 
   pi.on('agent_end', (_event, ctx) => armIdlePrompt(ctx))
 
