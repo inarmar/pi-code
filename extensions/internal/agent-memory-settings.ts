@@ -91,4 +91,3 @@ export function readMemorySettings(files: string[], managed: Record<string, unkn
   if ('autoMemoryDirectory' in managed) merged.autoMemoryDirectory = managed.autoMemoryDirectory
   return merged
 }
-

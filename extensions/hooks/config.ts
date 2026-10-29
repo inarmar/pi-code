@@ -5,7 +5,6 @@
  */
 
 import * as fs from 'node:fs'
-import * as path from 'node:path'
 import { readManagedSettings } from '../internal/managed-settings.ts'
 import { claudeSettingsChain, readSettingsChain } from '../internal/settings-chain.ts'
 import { errorMessage, escapeRegExp, isRecord } from '../internal/values.ts'

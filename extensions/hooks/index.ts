@@ -112,7 +112,7 @@ import { isSubagentPhaseEvent, SUBAGENT_CHANNEL } from '../internal/subagent-eve
 import { setSubagentStartHookRunner } from '../internal/subagent-hooks.ts'
 import { contentText, parseNumericEnv } from '../internal/values.ts'
 import { claudeToolInput, claudeToolName, claudeToolResponse, piToolOutput } from './claude-tools.ts'
-import { formatHooksSummary, type HookCommand, type HookMatcher, type HooksConfig, hookFiles, isBackgroundHook, loadHooks, loadManagedHooks, mergeAgentEnvHooks, mergeSkillHooks, readAllowedHttpHookUrls, readDisableAllHooks, readSettingsDisableAllHooks } from './config.ts'
+import { formatHooksSummary, type HookCommand, type HookMatcher, type HooksConfig, hookFiles, isBackgroundHook, loadHooks, loadManagedHooks, mergeAgentEnvHooks, mergeSkillHooks, readAllowedHttpHookUrls, readDisableAllHooks } from './config.ts'
 import { blockedToolCall, type HookDecision, jsonBlockVerdict, postToolFeedback, promptContext, runPreToolUse, runUserPromptSubmit, surfaceSystemMessages, tryParseJson } from './decisions.ts'
 import { allCommands, matchingCommands, passesIfFilter } from './matcher.ts'
 import { type HookRunner, type HookRunResult, runAgentHook, runHookCommand, runHttpHook, runMcpToolHook, runPromptHook, sessionEndTimeoutMs, timeoutMs } from './runners.ts'

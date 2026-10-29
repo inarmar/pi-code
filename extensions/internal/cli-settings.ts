@@ -42,7 +42,6 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { managedSettingsFile } from './managed-settings.ts'
 import { sharedSlot } from './shared-slot.ts'
 import { errorMessage, isRecord } from './values.ts'
 
