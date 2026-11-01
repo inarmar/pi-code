@@ -13,8 +13,7 @@ This package does not implement commands, MCP servers, Claude plugins, subagents
 
 Project-scoped skill and hook resources use Pi's native project trust. The process must be trusted by Pi before project-controlled executable configuration is loaded. In RPC mode, dialogs and notifications depend on the hosting client.
 
-The local distribution is named `pi-skills-hooks`; the source fork remains
-https://github.com/inarmar/pi-code.
+The local distribution is named `pi-skills-hooks`; the source fork remains <https://github.com/inarmar/pi-code>.
 
 ## Install
 
